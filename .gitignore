@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+dist/
+build/
+*.egg-info/
+
+# Node.js
+node_modules/
+npm-debug.log*
+
+# 操作系统 / 编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 本工具生成的 HTML 报告
+# 模板必须保留；示例报告属于本地生成物，不上传
+*.html
+!templates/report.html
+/examples/
+
+# 输出目录 / 临时文件 / 本地原始数据
+/out/
+/output/
+/reports/
+*.log
+*.tmp
+*.bak
+.raw/
+.cache/
