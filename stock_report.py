@@ -4,7 +4,8 @@
 
 用法：
     python3 stock_report.py --stock-code 600519
-    python3 stock_report.py --stock-code 301101 --out-dir ~/企业质量初筛
+    # 默认输出到项目目录下的 html-report/
+    python3 stock_report.py --stock-code 301101 --out-dir /tmp/初筛
     python3 stock_report.py --stock-code 600519 --bundle tests/fixtures/mini_bundle.json
 """
 from __future__ import annotations

@@ -26,13 +26,15 @@ python3 stock_report.py --stock-code 600519
 输出：
 
 ```text
-~/企业质量初筛/贵州茅台-企业质量初筛-20261107.html
+html-report/贵州茅台-企业质量初筛-20261107.html
 ```
+
+默认输出到本项目目录下的 `html-report/`；该目录属于本地生成物，已在 `.gitignore` 中排除。
 
 指定目录：
 
 ```bash
-python3 stock_report.py --stock-code 301101 --out-dir ~/企业初筛
+python3 stock_report.py --stock-code 301101 --out-dir /tmp/初筛
 ```
 
 离线重放旧采集包（仍然是 HTML 输出，不生成 JSON）：

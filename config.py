@@ -6,9 +6,12 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 VERSION = "0.1.0"
 
-DEFAULT_OUT_DIR = "~/企业质量初筛"
+PROJECT_DIR = Path(__file__).resolve().parent
+DEFAULT_OUT_DIR = str(PROJECT_DIR / "html-report")
 
 # ---- 估值参数 -------------------------------------------------------------
 WACC = 9.0                  # 无风险利率 + 风险溢价，默认 9%；取不到 WACC 时使用

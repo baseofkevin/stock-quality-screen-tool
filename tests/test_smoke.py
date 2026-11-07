@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import stock_report  # noqa: E402
 from screen.fetch import load_bundle, normalize_code  # noqa: E402
 from screen.compute import build_report_data  # noqa: E402
 from screen.score import compute_scores  # noqa: E402
@@ -28,6 +29,12 @@ class CodeTest(unittest.TestCase):
         self.assertEqual(to_secucode("600519"), "600519.SH")
         self.assertEqual(to_secucode("920001"), "920001.BJ")
         self.assertEqual(to_secucode("301101"), "301101.SZ")
+
+
+class CliDefaultTest(unittest.TestCase):
+    def test_default_out_dir_is_project_html_report(self):
+        args = stock_report.build_parser().parse_args(["--stock-code", "600519"])
+        self.assertEqual(Path(args.out_dir), ROOT / "html-report")
 
 
 class OfflineReportTest(unittest.TestCase):

@@ -12,6 +12,24 @@
 
 ---
 
+## 2026-11-07 10:25 +08:00
+
+### 修改
+
+- `config.py`：默认输出目录由 `~/企业质量初筛` 改为项目目录下的 `html-report/`，使用 `Path(__file__).resolve().parent` 解析，避免受运行目录影响。
+- `stock_report.py`：更新用法说明，默认输出到项目内 `html-report/`。
+- `README.md`：同步默认输出路径和指定目录示例。
+- `.gitignore`：新增 `/html-report/`，排除本地生成的 HTML 报告目录。
+- `tests/test_smoke.py`：新增默认输出目录断言，确认未传 `--out-dir` 时指向项目内 `html-report/`。
+
+### 影响
+
+- 不指定 `--out-dir` 时，报告写入本项目 `html-report/`，不再写入用户主目录。
+- `--out-dir` 仍可覆盖默认目录。
+- 生成的 HTML 不进入 Git，不影响评分和数据取数逻辑。
+
+---
+
 ## 2026-11-07 09:58 +08:00
 
 ### 新增
