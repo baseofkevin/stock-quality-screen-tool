@@ -12,6 +12,44 @@
 
 ---
 
+## 2026-11-08 14:45 +08:00
+
+### 修复
+
+- `screen/render.py`：利润率图的 x 轴原来只显示 8 个刻度（隔一个季度），容易被误读为季度数据不足；改为显示全部 15 个季度标签，并加大数据点。
+- `screen/render.py`：利润率图下方新增“覆盖 23Q1–26Q3，共 15 个季度”的明确说明；不足 15 个季度时注明实际数量。
+- `tests/test_smoke.py`：新增 15 个季度标签全部输出的断言。
+
+### 影响
+
+- 仅影响利润率图的可读性和说明文字，不改变数据窗口、计算公式、Q/V 或估值分位口径。
+
+---
+
+## 2026-11-08 14:40 +08:00
+
+### 新增
+
+- `screen/compute.py`：新增 `_margin_trend()`，用 `OperatingRevenue_Q`、`OperatingCost_Q`、`NPParentCompanyOwners_Q` 计算最近 15 个报告期的单季毛利率和归母净利率；`build_financials()` 新增 `margin_trend`。
+- `screen/compute.py`：`_valuation()` 新增 `chart`，复用现有 `RPT_VALUEANALYSIS_DET` 周频序列，截取最近 15 个报告季度起点之后的数据，生成 PE/PB/PS 曲线点、最新点和 PE 负值区间。
+- `screen/render.py`：新增通用 SVG 折线图 `_line_chart()`、利润率图 `_margin_chart()`、估值三面板 `_valuation_charts()`；第一节插入近 15 季度利润率曲线，第三节插入 PE/PB/PS 三个独立面板。
+- `templates/report.html`：新增图表、图例、最新点、PE 负值灰带相关 CSS。
+
+### 修改
+
+- `config.py`：`VERSION` 由 `0.1.0` 升至 `0.2.0`；新增 `TREND_QUARTERS = 15`。
+- `tests/test_smoke.py`：增加图表存在性、SVG 数量、最新点、PE 为负断线等断言。
+- `README.md`、`METHODOLOGY.md`：补充 15 季度利润率、15 季度估值曲线、周频口径、PE 为负处理和“分位仍按全历史”的说明。
+
+### 影响
+
+- 报告新增 4 张 SVG 图：1 张利润率双曲线、3 张估值独立面板；不新增取数接口、不新增依赖、不生成额外文件。
+- Q/V、风险检查、决策矩阵、估值分位口径均未改变；图表只作展示。
+- 季度利润率取单季口径，未年化；PE/PB/PS 曲线只覆盖最近 15 个报告季度，分位仍按全部可用历史。
+- 老 bundle 缺少足够季度或估值数据时，图显示可用点数或“暂无数据”，不会导致报告生成失败。
+
+---
+
 ## 2026-11-07 10:25 +08:00
 
 ### 修改

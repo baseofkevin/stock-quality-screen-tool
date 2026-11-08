@@ -59,6 +59,201 @@ def _bar(value: float | None, cls: str = "") -> str:
     return f'<div class="scorebar {cls}"><i style="width:{v:.1f}%"></i></div>'
 
 
+def _line_chart(points: list[dict[str, Any]], series: list[dict[str, Any]], *,
+                height: int = 220, y_min: float | None = None, y_max: float | None = None,
+                y_fmt=None, value_fmt=None, x_labels: int = 7, dots: bool = False,
+                bands: list[tuple[int, int]] | None = None, mark_latest: bool = True,
+                aria_label: str = "", legend: bool = True) -> str:
+    """轻量 SVG 折线图：无 JS、无外部资源，缺失值断线。"""
+    if not points:
+        return '<p class="small">暂无图表数据。</p>'
+    keys = [s["key"] for s in series]
+    values = [p.get(k) for p in points for k in keys if p.get(k) is not None]
+    if not values:
+        return '<p class="small">暂无可绘制的数值。</p>'
+
+    y_fmt = y_fmt or (lambda v: n(v, 2))
+    value_fmt = value_fmt or (lambda v: n(v, 2))
+    lo, hi = min(values), max(values)
+    if y_min is not None:
+        lo = min(lo, y_min)
+    if y_max is not None:
+        hi = max(hi, y_max)
+    if hi <= lo:
+        hi = lo + 1.0
+    span = hi - lo
+    if y_min is None:
+        lo -= span * 0.05
+    if y_max is None:
+        hi += span * 0.05
+    if hi <= lo:
+        hi = lo + 1.0
+
+    width, left, right, top, bottom = 720, 52, 48, 14, 30
+    plot_w, plot_h = width - left - right, height - top - bottom
+    last = len(points) - 1
+
+    def x(i: int) -> float:
+        return left + (plot_w * i / last if last else plot_w / 2)
+
+    def y(v: float) -> float:
+        return top + (hi - v) / (hi - lo) * plot_h
+
+    parts = [f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="{esc(aria_label)}">',
+             f"<title>{esc(aria_label)}</title>"]
+    for start, end in bands or []:
+        start, end = max(0, start), min(last, end)
+        if end < start:
+            continue
+        x1, x2 = x(start), x(end)
+        parts.append(f'<rect class="band" x="{x1:.1f}" y="{top}" width="{max(3.0, x2 - x1):.1f}" '
+                     f'height="{plot_h}" />')
+    for i in range(5):
+        v = lo + (hi - lo) * i / 4
+        yy = y(v)
+        parts.append(f'<line class="grid" x1="{left}" y1="{yy:.1f}" x2="{width - right}" y2="{yy:.1f}" />')
+        parts.append(f'<text class="tick" x="{left - 8}" y="{yy + 4:.1f}" text-anchor="end">{esc(y_fmt(v))}</text>')
+    parts.append(f'<line class="axis" x1="{left}" y1="{top + plot_h}" x2="{width - right}" y2="{top + plot_h}" />')
+
+    for s in series:
+        path: list[str] = []
+        started = False
+        for i, point in enumerate(points):
+            v = point.get(s["key"])
+            if v is None:
+                started = False
+                continue
+            path.append(f'{"M" if not started else "L"}{x(i):.1f},{y(v):.1f}')
+            started = True
+        if path:
+            dash = ' stroke-dasharray="5 4"' if s.get("dash") else ""
+            parts.append(f'<path d="{" ".join(path)}" fill="none" stroke="{s["color"]}" '
+                         f'stroke-width="1.8"{dash} />')
+        if dots:
+            for i, point in enumerate(points):
+                v = point.get(s["key"])
+                if v is not None:
+                    parts.append(f'<circle cx="{x(i):.1f}" cy="{y(v):.1f}" r="2.6" fill="{s["color"]}" />')
+
+    if mark_latest and points:
+        for s in series:
+            v = points[-1].get(s["key"])
+            if v is None:
+                continue
+            x_last, y_last = x(last), y(v)
+            parts.append(f'<line class="latest-line" x1="{x_last:.1f}" y1="{top}" '
+                         f'x2="{x_last:.1f}" y2="{top + plot_h}" />')
+            parts.append(f'<circle cx="{x_last:.1f}" cy="{y_last:.1f}" r="4" fill="{s["color"]}" '
+                         f'stroke="#fff" stroke-width="1.5" />')
+            anchor = "end" if x_last > left + plot_w * 0.72 else "start"
+            tx = x_last - 7 if anchor == "end" else x_last + 7
+            ty = max(top + 10, min(top + plot_h - 2, y_last - 8))
+            parts.append(f'<text class="latest" x="{tx:.1f}" y="{ty:.1f}" '
+                         f'text-anchor="{anchor}" fill="{s["color"]}">{esc(value_fmt(v))}</text>')
+
+    label_count = min(x_labels, len(points))
+    if label_count <= 1:
+        indices = [0]
+    else:
+        indices = sorted({round(i * last / (label_count - 1)) for i in range(label_count)})
+    for i in indices:
+        label = str(points[i].get("label") or points[i].get("date") or "")[:7]
+        parts.append(f'<text class="tick" x="{x(i):.1f}" y="{height - 8}" text-anchor="middle">'
+                     f'{esc(label)}</text>')
+    parts.append("</svg>")
+
+    legend_html = ""
+    if legend:
+        items = "".join(
+            f'<span><i style="background:{s["color"]}"></i>{esc(s["label"])}</span>' for s in series
+        )
+        legend_html = f'<div class="chart-legend">{items}</div>'
+    return f'<div class="chart">{legend_html}{"".join(parts)}</div>'
+
+
+def _negative_bands(points: list[dict[str, Any]]) -> list[tuple[int, int]]:
+    bands: list[tuple[int, int]] = []
+    start: int | None = None
+    for i, point in enumerate(points):
+        if point.get("pe_negative"):
+            if start is None:
+                start = i
+        elif start is not None:
+            bands.append((start, i - 1))
+            start = None
+    if start is not None:
+        bands.append((start, len(points) - 1))
+    return bands
+
+
+def _margin_chart(trend: dict[str, Any]) -> str:
+    points = trend.get("points") or []
+    if not points:
+        return ('<h3>近 15 个季度利润率趋势</h3>'
+                '<p class="small">暂无季度利润表数据。</p>')
+    latest = points[-1]
+    series = [
+        {"key": "gross", "label": "毛利率", "color": "#1f5f8b"},
+        {"key": "net", "label": "净利率（归母）", "color": "#1f7a4d"},
+    ]
+    first_label = esc(points[0].get("label"))
+    last_label = esc(latest.get("label"))
+    note = (f"覆盖 {first_label}–{last_label}，共 {len(points)} 个季度；"
+            f"最新 {last_label}：毛利率 {pct(latest.get('gross'))} / "
+            f"净利率（归母） {pct(latest.get('net'))}")
+    if len(points) < config.TREND_QUARTERS:
+        note += f"；少于 {config.TREND_QUARTERS} 个季度"
+    chart = _line_chart(
+        points, series, height=240, y_min=0.0, y_max=100.0,
+        y_fmt=lambda v: pct(v, 0), value_fmt=lambda v: pct(v, 1),
+        x_labels=config.TREND_QUARTERS, dots=True, mark_latest=False,
+        aria_label="近 15 个季度毛利率和净利率",
+    )
+    return (
+        "<h3>近 15 个季度利润率趋势</h3>"
+        '<p class="small">单季口径；净利率为归母口径；季度数据未经审计。</p>'
+        f"{chart}<p class=\"small\">{note}</p>"
+    )
+
+
+def _valuation_charts(chart: dict[str, Any]) -> str:
+    points = chart.get("points") or []
+    if not points:
+        return '<p class="small">暂无近 15 个季度估值数据。</p>'
+    specs = [
+        ("pe", "PE(TTM)", "#1f5f8b"),
+        ("pb", "PB(MRQ)", "#1f7a4d"),
+        ("ps", "PS(TTM)", "#9a6700"),
+    ]
+    latest_map = chart.get("latest") or {}
+    panels = []
+    for key, label, color in specs:
+        latest = latest_map.get(key)
+        if latest:
+            note = f"最新 {latest.get('date')}：{n(latest.get('value'))}"
+        elif key == "pe" and chart.get("pe_negative_latest"):
+            note = f"最新 {points[-1].get('date')}：PE 为负，不适用"
+        else:
+            note = f"最新 {points[-1].get('date')}：数据缺失"
+        bands = _negative_bands(points) if key == "pe" else []
+        panel = _line_chart(
+            points, [{"key": key, "label": label, "color": color}],
+            height=200, y_fmt=lambda v: n(v, 2), value_fmt=lambda v: n(v, 2),
+            x_labels=6, mark_latest=True, bands=bands,
+            aria_label=f"近 15 个季度 {label} 走势", legend=False,
+        )
+        panels.append(
+            f'<div class="chart-panel"><h4>{esc(label)}</h4>{panel}'
+            f'<p class="small">{esc(note)}</p></div>'
+        )
+    start, end = chart.get("start") or "—", chart.get("end") or "—"
+    return (
+        '<div class="chart-grid">' + "".join(panels) + "</div>"
+        f'<p class="small">数据范围：{esc(start)} 至 {esc(end)}；周频；'
+        "灰色区间为 PE 为负（亏损），该区间不连线。分位表仍按全部可用历史计算。</p>"
+    )
+
+
 def _section_business(data: dict[str, Any]) -> str:
     meta = data["meta"]
     business = meta.get("business") or "暂无披露"
@@ -104,6 +299,7 @@ def _section_business(data: dict[str, Any]) -> str:
         product_table = '<p class="small">产品/业务分部：暂无披露。</p>'
     moat = data.get("moat") or {}
     reasons = "".join(f"<li>{esc(x)}</li>" for x in moat.get("reasons") or [])
+    margin_chart = _margin_chart(data["financials"].get("margin_trend") or {})
     return f"""
 <section>
   <h2>一、生意本身</h2>
@@ -124,6 +320,7 @@ def _section_business(data: dict[str, Any]) -> str:
     <thead><tr><th>年度</th><th>营收（亿）</th><th>归母净利（亿）</th><th>ROE</th><th>ROIC</th><th>FCF（亿）</th><th>FCF/营收</th><th>毛利率</th></tr></thead>
     <tbody>{''.join(rows) or '<tr><td colspan="8">数据不足</td></tr>'}</tbody>
   </table>
+  {margin_chart}
   <p class="small">只写主营、行业、五年量化轨迹和护城河规则结论；不含上下游、政策、管理层评价。</p>
 </section>"""
 
@@ -184,6 +381,7 @@ def _section_valuation(data: dict[str, Any]) -> str:
     sample_note = "暂无历史估值样本"
     if sample:
         sample_note = f"{esc(sample.get('start'))} 至 {esc(sample.get('end'))}，{esc(sample.get('points'))} 个周样本"
+    valuation_charts = _valuation_charts(val.get("chart") or {})
 
     fc = data.get("forecast") or {}
     frows = []
@@ -239,6 +437,9 @@ def _section_valuation(data: dict[str, Any]) -> str:
     <thead><tr><th>指标</th><th>当前</th><th>历史分位</th><th>区间</th><th>样本点数</th></tr></thead>
     <tbody>{''.join(mrows) or '<tr><td colspan="5">暂无历史估值数据</td></tr>'}</tbody>
   </table>
+
+  <h3>近 15 个季度估值走势（周频）</h3>
+  {valuation_charts}
 
   <h3>机构未来盈利预期</h3>
   <p class="small">{esc(coverage_note)}。预测净利与营收单位为亿元；预测不是事实。</p>

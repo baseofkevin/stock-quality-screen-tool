@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT_DIR = str(PROJECT_DIR / "html-report")
+
+# ---- 图表窗口 -------------------------------------------------------------
+TREND_QUARTERS = 15         # 利润率、估值曲线都只看最近 15 个报告季度
 
 # ---- 估值参数 -------------------------------------------------------------
 WACC = 9.0                  # 无风险利率 + 风险溢价，默认 9%；取不到 WACC 时使用

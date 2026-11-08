@@ -83,6 +83,47 @@ def _annual_dates(dates: list[str]) -> list[str]:
     return sorted([d for d in dates if d.endswith(ANNUAL_SUFFIX)], reverse=True)
 
 
+def _quarter_label(d: str) -> str:
+    try:
+        year = d[:4]
+        month = int(d[5:7])
+        quarter = (month - 1) // 3 + 1
+        return f"{year[2:]}Q{quarter}"
+    except (ValueError, TypeError):
+        return d
+
+
+def _margin_trend(merged: dict[str, dict[str, dict[str, Any]]],
+                  quarters: int = config.TREND_QUARTERS) -> dict[str, Any]:
+    """最近 N 个报告期的单季毛利率、归母净利率。
+
+    只用接口已返回的 _Q 字段，不做累计差分；缺失就留空，图上断线。
+    """
+    dates = sorted(merged)[-quarters:]
+    points: list[dict[str, Any]] = []
+    for d in dates:
+        inc = merged.get(d, {}).get("income", {})
+        revenue = num(inc.get("OperatingRevenue_Q"))
+        if revenue is None:
+            revenue = num(inc.get("TotalOperatingRevenue_Q"))
+        cost = num(inc.get("OperatingCost_Q"))
+        parent_np = num(inc.get("NPParentCompanyOwners_Q"))
+        gross = ((revenue - cost) / revenue * 100.0) if (revenue and cost is not None) else None
+        net = (parent_np / revenue * 100.0) if (revenue and parent_np is not None) else None
+        points.append({
+            "date": d,
+            "label": _quarter_label(d),
+            "gross": gross,
+            "net": net,
+        })
+    return {
+        "points": points,
+        "count": len(points),
+        "start": dates[0] if dates else "",
+        "end": dates[-1] if dates else "",
+    }
+
+
 def _period_record(d: str, parts: dict[str, dict[str, Any]], capex: dict[int, float]) -> dict[str, Any]:
     inc = parts.get("income", {})
     bal = parts.get("balance", {})
@@ -182,7 +223,12 @@ def build_financials(calls: list[dict[str, Any]], code: str) -> dict[str, Any]:
             "eps_ttm": num(inc.get("EPSTTM")),
         })
 
-    return {"annual": annual, "latest": latest, "capex_years": sorted(capex)}
+    return {
+        "annual": annual,
+        "latest": latest,
+        "capex_years": sorted(capex),
+        "margin_trend": _margin_trend(merged),
+    }
 
 
 def _quote(calls: list[dict[str, Any]], code: str) -> dict[str, Any]:
@@ -213,7 +259,54 @@ def market_cap_yi(quote: dict[str, Any]) -> tuple[float | None, float | None]:
     return (yuan / 1e8, yuan)
 
 
-def _valuation(calls: list[dict[str, Any]], quote: dict[str, Any]) -> dict[str, Any]:
+def _valuation_chart(ordered: list[dict[str, Any]], start: str) -> dict[str, Any]:
+    """近若干季度的周频估值点；PE 为负时置空，并记录负值区间。"""
+    points: list[dict[str, Any]] = []
+    for row in ordered:
+        d = str(row.get("TRADE_DATE") or "")[:10]
+        if not d or (start and d < start):
+            continue
+        pe = num(row.get("PE_TTM"))
+        pb = num(row.get("PB_MRQ"))
+        ps = num(row.get("PS_TTM"))
+        points.append({
+            "date": d,
+            "pe": pe if (pe is not None and pe > 0) else None,
+            "pe_negative": bool(pe is not None and pe <= 0),
+            "pb": pb if (pb is not None and pb > 0) else None,
+            "ps": ps if (ps is not None and ps > 0) else None,
+        })
+
+    ranges: list[list[str]] = []
+    range_start: int | None = None
+    for i, point in enumerate(points):
+        if point["pe_negative"]:
+            if range_start is None:
+                range_start = i
+        elif range_start is not None:
+            ranges.append([points[range_start]["date"], points[i - 1]["date"]])
+            range_start = None
+    if range_start is not None and points:
+        ranges.append([points[range_start]["date"], points[-1]["date"]])
+
+    latest: dict[str, dict[str, Any] | None] = {}
+    for key in ("pe", "pb", "ps"):
+        value = points[-1].get(key) if points else None
+        latest[key] = {"date": points[-1]["date"], "value": value} if value is not None else None
+
+    return {
+        "points": points,
+        "start": points[0]["date"] if points else "",
+        "end": points[-1]["date"] if points else "",
+        "count": len(points),
+        "negative_ranges": ranges,
+        "latest": latest,
+        "pe_negative_latest": bool(points and points[-1]["pe_negative"]),
+    }
+
+
+def _valuation(calls: list[dict[str, Any]], quote: dict[str, Any],
+               chart_start: str = "") -> dict[str, Any]:
     rows = _merge_rows(calls, "RPT_VALUEANALYSIS_DET")
     weekly: dict[tuple[int, int], dict[str, Any]] = {}
     for row in rows:
@@ -232,7 +325,15 @@ def _valuation(calls: list[dict[str, Any]], quote: dict[str, Any]) -> dict[str, 
             if v is not None and v > 0:
                 series[key].append(v)
     if not ordered:
-        return {"metrics": {}, "sample": {}, "available": False}
+        return {
+            "metrics": {},
+            "sample": {},
+            "available": False,
+            "chart": {
+                "points": [], "start": "", "end": "", "count": 0,
+                "negative_ranges": [], "latest": {}, "pe_negative_latest": False,
+            },
+        }
 
     current = {
         "pe": num(quote.get("pe_ratio")),
@@ -263,6 +364,7 @@ def _valuation(calls: list[dict[str, Any]], quote: dict[str, Any]) -> dict[str, 
             "end": str(ordered[-1].get("TRADE_DATE") or "")[:10],
             "points": len(ordered),
         },
+        "chart": _valuation_chart(ordered, chart_start),
         "available": bool(metrics),
     }
 
@@ -418,6 +520,8 @@ def build_report_data(calls: list[dict[str, Any]], code: str) -> dict[str, Any]:
     if fcf is not None and cap_yuan:
         fcf_yield = fcf / cap_yuan * 100.0
 
+    chart_start = (financials.get("margin_trend") or {}).get("start") or ""
+
     return {
         "meta": {
             "code": code,
@@ -442,7 +546,7 @@ def build_report_data(calls: list[dict[str, Any]], code: str) -> dict[str, Any]:
         },
         "financials": financials,
         "profile": profile,
-        "valuation": _valuation(calls, quote),
+        "valuation": _valuation(calls, quote, chart_start=chart_start),
         "forecast": _forecast(calls, code),
         "mainop": _mainop(calls, annual),
         "dcf": _dcf(annual, quote),
