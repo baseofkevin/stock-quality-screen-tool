@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
 
     name = args.name.strip() or data["meta"].get("name") or data["meta"]["code"]
     out_dir = Path(os.path.expanduser(args.out_dir)).resolve()
-    filename = f"{_safe_name(name)}-企业质量初筛-{datetime.now():%Y%m%d}.html"
+    filename = f"{_safe_name(name)}-企业质量初筛-{datetime.now():%Y%m%d-%H%M%S}.html"
     target = out_dir / filename
     _write_atomic(target, html_text)
 

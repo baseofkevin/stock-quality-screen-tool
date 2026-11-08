@@ -26,10 +26,10 @@ python3 stock_report.py --stock-code 600519
 输出：
 
 ```text
-html-report/贵州茅台-企业质量初筛-20261107.html
+html-report/贵州茅台-企业质量初筛-20261108-213008.html
 ```
 
-默认输出到本项目目录下的 `html-report/`；该目录属于本地生成物，已在 `.gitignore` 中排除。
+文件名包含生成日期和时分秒，例如 `20261108-213008`。默认输出到本项目目录下的 `html-report/`；该目录属于本地生成物，已在 `.gitignore` 中排除。
 
 指定目录：
 

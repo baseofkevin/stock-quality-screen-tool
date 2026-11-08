@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT_DIR = str(PROJECT_DIR / "html-report")

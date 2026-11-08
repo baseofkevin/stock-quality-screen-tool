@@ -632,16 +632,14 @@ def render_html(data: dict[str, Any]) -> str:
     key = decision.get("key", "unknown")
     price = meta.get("price")
     price_text = f"¥ {n(price)}" if price is not None else "价格未取得"
-    generated_at = datetime.now()
-    title = (f"{meta.get('name')}（{meta.get('code')}）企业质量初筛 · "
-             f"{generated_at:%Y-%m-%d %H:%M:%S}")
+    title = f"{meta.get('name')}（{meta.get('code')}）企业质量初筛"
     content = f"""
 <div class="hero">
   <h1>{esc(meta.get('name'))} <span style="font-size:15px;opacity:.75">{esc(meta.get('code'))}</span>
     <span class="badge {esc(key)}">{esc(decision.get('label'))}</span></h1>
   <div class="sub">{esc(meta.get('industry'))} · 企业质量初筛 · 只做定量判断</div>
   <div class="price">{price_text}<span style="font-size:13px;font-weight:400;opacity:.8;margin-left:10px">市值 {n(meta.get('market_cap_yi'))} 亿元</span></div>
-  <div class="meta">行情日期 {esc(meta.get('quote_date') or '—')} · 最新报告期 {esc(meta.get('latest_date') or '—')} · 生成 {generated_at:%Y-%m-%d %H:%M:%S}</div>
+  <div class="meta">行情日期 {esc(meta.get('quote_date') or '—')} · 最新报告期 {esc(meta.get('latest_date') or '—')} · 生成 {datetime.now():%Y-%m-%d %H:%M}</div>
 </div>
 {_section_business(data)}
 {_section_risks(data)}
