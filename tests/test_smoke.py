@@ -56,6 +56,7 @@ class OfflineReportTest(unittest.TestCase):
             self.assertFalse((out / "report.json").exists())
             html = files[0].read_text(encoding="utf-8")
             self.assertIn("<title>贵州茅台（sh600519）企业质量初筛</title>", html)
+            self.assertNotIn("· 生成", html)
             for heading in ["一、生意本身", "二、经营质量与风险", "三、企业估值与机构预期",
                             "四、综合评分", "五、后续跟踪"]:
                 self.assertIn(heading, html)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -639,7 +638,7 @@ def render_html(data: dict[str, Any]) -> str:
     <span class="badge {esc(key)}">{esc(decision.get('label'))}</span></h1>
   <div class="sub">{esc(meta.get('industry'))} · 企业质量初筛 · 只做定量判断</div>
   <div class="price">{price_text}<span style="font-size:13px;font-weight:400;opacity:.8;margin-left:10px">市值 {n(meta.get('market_cap_yi'))} 亿元</span></div>
-  <div class="meta">行情日期 {esc(meta.get('quote_date') or '—')} · 最新报告期 {esc(meta.get('latest_date') or '—')} · 生成 {datetime.now():%Y-%m-%d %H:%M}</div>
+  <div class="meta">行情日期 {esc(meta.get('quote_date') or '—')} · 最新报告期 {esc(meta.get('latest_date') or '—')}</div>
 </div>
 {_section_business(data)}
 {_section_risks(data)}
