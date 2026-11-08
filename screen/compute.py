@@ -398,13 +398,19 @@ def _forecast(calls: list[dict[str, Any]], code: str) -> dict[str, Any]:
     rating_payload = _data(_find_call(calls, "data_rating"))
     rating = _code_data(rating_payload, code)
     rating = rating if isinstance(rating, dict) else {}
-    coverage = max([f["institution_cnt"] for f in forecasts] + [_as_int(rating.get("forecastInstitutions")) or 0])
+    # V 只看盈利预测/目标价；评级记录不能冒充预测覆盖。
+    rating_coverage = _as_int(rating.get("forecastInstitutions")) or 0
+    forecast_coverage = max([f["institution_cnt"] for f in forecasts] + [0])
+    # 预测行没带机构数时，用评级接口的机构数兜底；没有预测行时保持 0。
+    if forecasts and forecast_coverage == 0:
+        forecast_coverage = rating_coverage
     target = num(c.get("targetPrice")) if isinstance(c, dict) else None
     return {
-        "available": bool(forecasts or target or rating),
+        "available": bool(forecasts or target),
         "target_price": target,
         "forecasts": forecasts,
-        "coverage": coverage,
+        "coverage": forecast_coverage,
+        "rating_coverage": rating_coverage,
         "rating": {
             "buy": _as_int(rating.get("ratingBuyCnt")) or 0,
             "increase": _as_int(rating.get("ratingIncCnt")) or 0,
@@ -451,6 +457,92 @@ def _dcf(annual: list[dict[str, Any]], quote: dict[str, Any]) -> dict[str, Any]:
         "years": config.DCF_YEARS,
     }
 
+
+
+def _cash_valuation(annual: list[dict[str, Any]],
+                    latest: dict[str, Any],
+                    quote: dict[str, Any],
+                    cap_yuan: float | None,
+                    industry: str = "") -> dict[str, Any]:
+    """现金扣除与底线估值（仅展示，不进入 V 分）。
+
+    口径（2026-11 定稿）：
+      · 现金底仓 = 货币资金，不扣有息负债；
+      · 净利润总额取最近年报的 net_profit_total（营业收入 × 净利率的近似值）；
+      · 扣现金市值 = 总市值 − 货币资金；
+      · 底线价值(N) = 货币资金 + N × 最近年报净利润总额；
+      · 年限 N 见 config.CASH_ANCHOR_YEARS，是情景假设，不是目标价。
+    金融股（银行/保险/证券）的现金与利润口径不适用，直接返回不适用。
+    """
+    industry = str(industry or "")
+    if any(k in industry for k in ("银行", "保险", "证券")):
+        return {"applicable": False, "reason": "金融股不适用", "anchors": []}
+
+    annual = annual or []
+    latest = latest or {}
+    first = annual[0] if annual else {}
+    cash = num(latest.get("cash"))
+    cash_period = str(latest.get("date") or "")
+    if cash is None:
+        cash = num(first.get("cash"))
+        cash_period = str(first.get("date") or "")
+    debt = num(latest.get("debt"))
+    if debt is None:
+        debt = num(first.get("debt"))
+    np_total = num(first.get("net_profit_total"))
+    profit_period = str(first.get("date") or "")
+    cap = num(cap_yuan)
+    shares = num(quote.get("total_shares"))
+
+    cash_yi = cash / 1e8 if cash is not None else None
+    debt_yi = debt / 1e8 if debt is not None else None
+    cap_yi = cap / 1e8 if cap is not None else None
+    ex_cash_yuan = (cap - cash) if (cap is not None and cash is not None) else None
+    ex_cash_yi = ex_cash_yuan / 1e8 if ex_cash_yuan is not None else None
+    cash_ratio = (cash / cap * 100.0) if (cash is not None and cap) else None
+    np_yi = np_total / 1e8 if np_total is not None else None
+    ex_cash_pe = (ex_cash_yuan / np_total
+                  if (ex_cash_yuan is not None and ex_cash_yuan > 0
+                      and np_total is not None and np_total > 0) else None)
+    earnings_yield = (np_total / cap * 100.0
+                      if (np_total is not None and np_total > 0 and cap) else None)
+
+    anchors: list[dict[str, Any]] = []
+    reason = ""
+    if cash is None:
+        reason = "缺少货币资金"
+    elif np_total is None:
+        reason = "缺少最近年报净利润总额"
+    elif np_total <= 0:
+        reason = "最近年报净利润总额非正"
+    else:
+        for years in config.CASH_ANCHOR_YEARS:
+            value = cash + years * np_total
+            per_share = (value / shares) if (shares and shares > 0) else None
+            margin = ((value - cap) / value * 100.0) if (cap and value > 0) else None
+            anchors.append({
+                "years": years,
+                "value_yi": value / 1e8,
+                "per_share": per_share,
+                "margin_pct": margin,
+            })
+
+    return {
+        "applicable": bool(anchors),
+        "reason": reason,
+        "cash_yi": cash_yi,
+        "cash_period": cash_period,
+        "debt_yi": debt_yi,
+        "market_cap_yi": cap_yi,
+        "cash_ratio_pct": cash_ratio,
+        "ex_cash_cap_yi": ex_cash_yi,
+        "negative_ex_cash": bool(ex_cash_yuan is not None and ex_cash_yuan < 0),
+        "net_profit_yi": np_yi,
+        "profit_period": profit_period,
+        "ex_cash_pe": ex_cash_pe,
+        "earnings_yield_pct": earnings_yield,
+        "anchors": anchors,
+    }
 
 
 def _mainop(calls: list[dict[str, Any]], annual: list[dict[str, Any]]) -> dict[str, Any]:
@@ -550,4 +642,7 @@ def build_report_data(calls: list[dict[str, Any]], code: str) -> dict[str, Any]:
         "forecast": _forecast(calls, code),
         "mainop": _mainop(calls, annual),
         "dcf": _dcf(annual, quote),
+        "cash_valuation": _cash_valuation(
+            annual, latest, quote, cap_yuan,
+            str(profile.get("industry") or profile.get("sector") or "")),
     }

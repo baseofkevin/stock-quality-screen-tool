@@ -11,9 +11,10 @@ sys.path.insert(0, str(ROOT))
 
 import stock_report  # noqa: E402
 from screen.fetch import load_bundle, normalize_code  # noqa: E402
-from screen.compute import _margin_trend, _valuation_chart, build_report_data  # noqa: E402
-from screen.render import _margin_chart  # noqa: E402
-from screen.score import compute_scores  # noqa: E402
+from screen.compute import (_cash_valuation, _margin_trend, _valuation_chart,
+                            build_report_data)  # noqa: E402
+from screen.render import _margin_chart, _section_valuation  # noqa: E402
+from screen.score import _data_quality, _decision, _valuation_score, compute_scores  # noqa: E402
 from providers.eastmoney import to_secucode  # noqa: E402
 
 FIXTURE = ROOT / "tests" / "fixtures" / "mini_bundle.json"
@@ -53,15 +54,30 @@ class OfflineReportTest(unittest.TestCase):
             self.assertEqual(files[0].suffix, ".html")
             self.assertFalse((out / "report.json").exists())
             html = files[0].read_text(encoding="utf-8")
+            self.assertRegex(html, r"<title>.*\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}</title>")
+            self.assertRegex(html, r"生成 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
             for heading in ["一、生意本身", "二、经营质量与风险", "三、企业估值与机构预期",
                             "四、综合评分", "五、后续跟踪"]:
                 self.assertIn(heading, html)
-            self.assertIn("机构未来盈利预期", html)
+            self.assertIn("PE/PB/PS 历史分位及走势图", html)
+            self.assertIn("机构对企业未来盈利的预期", html)
             self.assertIn("产品/业务结构", html)
             self.assertIn("茅台酒", html)
             self.assertIn("机构目标价", html)
             self.assertIn("近 15 个季度利润率趋势", html)
-            self.assertIn("近 15 个季度估值走势（周频）", html)
+            self.assertNotIn("近 15 个季度估值走势（周频）", html)
+            self.assertNotIn("本报告的估值", html)
+            self.assertIn("对企业进行 DCF 估值", html)
+            self.assertIn("用现金扣除与底线估值方式对企业进行估值", html)
+            self.assertIn("货币资金/市值", html)
+            self.assertIn("最近年报净利润总额", html)
+            self.assertIn("估值分构成（机构口径）", html)
+            self.assertIn("机构目标价空间", html)
+            self.assertIn("预期未来净利增速", html)
+            self.assertIn("数据完整度", html)
+            self.assertIn("风险检查不计入 Q", html)
+            self.assertIn("风险检查 10/10 已知", html)
+            self.assertNotIn("置信度", html)
             self.assertEqual(html.count("<svg"), 4)
             self.assertIn('class="latest"', html)
             self.assertNotIn("财务数据全景", html)
@@ -75,14 +91,33 @@ class OfflineReportTest(unittest.TestCase):
         self.assertIsNotNone(data["valuation_score"]["score"])
         self.assertEqual(len(data["risks"]["checks"]), 10)
         self.assertIn(data["decision"]["key"],
-                      {"buy", "watch_price", "expensive", "watch", "avoid", "unknown"})
-        self.assertGreaterEqual(data["confidence"], 0)
-        self.assertLessEqual(data["confidence"], 100)
+                      {"buy", "buy_ok", "buy_small", "buy_trial",
+                       "watch_price", "expensive", "watch", "avoid", "unknown"})
+        self.assertNotIn("confidence", data)
+        self.assertEqual(data["data_quality"]["risk_total"], 10)
+        self.assertEqual(data["data_quality"]["risk_known"], 10)
+        self.assertEqual(data["data_quality"]["institution_coverage"], 4)
+        self.assertEqual(data["data_quality"]["buy_blockers"], [])
         self.assertGreaterEqual(len(data["forecast"]["forecasts"]), 1)
         self.assertTrue(data["tracking"])
         self.assertEqual(data["financials"]["margin_trend"]["count"], 6)
         self.assertGreater(data["valuation"]["chart"]["count"], 0)
         self.assertIsNotNone(data["valuation"]["chart"]["latest"]["pe"])
+        self.assertEqual([a["years"] for a in data["cash_valuation"]["anchors"]],
+                         [3, 5, 10, 15, 20])
+        self.assertEqual([p["key"] for p in data["valuation_score"]["parts"]],
+                         ["target_upside", "forecast_pe", "profit_growth"])
+
+    def test_expectation_flags_are_inside_forecast_section(self):
+        raw = load_bundle(FIXTURE)
+        data = build_report_data(raw["calls"], raw["code"])
+        data["flags"] = ["测试预期差提示"]
+        html = _section_valuation(data)
+        i_forecast = html.index("机构对企业未来盈利的预期")
+        i_flag = html.index("测试预期差提示")
+        i_dcf = html.index("对企业进行 DCF 估值")
+        self.assertLess(i_forecast, i_flag)
+        self.assertLess(i_flag, i_dcf)
 
     def test_margin_trend_keeps_last_15_quarters(self):
         dates = [f"{year}-{month}-{day}" for year in range(2022, 2027)
@@ -126,6 +161,170 @@ class OfflineReportTest(unittest.TestCase):
         self.assertTrue(chart["points"][1]["pe_negative"])
         self.assertEqual(chart["negative_ranges"], [["2024-01-12", "2024-01-12"]])
         self.assertEqual(chart["latest"]["pe"]["value"], 22.0)
+
+
+class CashValuationTest(unittest.TestCase):
+    """现金扣除与底线估值：只展示，不进入 V 分。"""
+
+    def test_uses_latest_cash_and_total_profit(self):
+        annual = [{"date": "2025-12-31", "cash": 2.3e9, "debt": 5e8,
+                   "net_profit": 4.8e8, "net_profit_total": 5.1e8}]
+        latest = {"date": "2026-09-30", "cash": 2.5e9, "debt": 1e9}
+        quote = {"total_shares": 1e8, "price": 5.0}
+        cv = _cash_valuation(annual, latest, quote, 5e9)
+        self.assertTrue(cv["applicable"])
+        self.assertAlmostEqual(cv["cash_yi"], 25.0)       # 用最新期，不是年报 23 亿
+        self.assertAlmostEqual(cv["debt_yi"], 10.0)
+        self.assertAlmostEqual(cv["cash_ratio_pct"], 50.0)
+        self.assertAlmostEqual(cv["ex_cash_cap_yi"], 25.0)
+        self.assertAlmostEqual(cv["net_profit_yi"], 5.1)
+        self.assertAlmostEqual(cv["ex_cash_pe"], 25.0 / 5.1)
+        self.assertAlmostEqual(cv["earnings_yield_pct"], 5.1 / 50.0 * 100.0)
+        self.assertEqual([a["years"] for a in cv["anchors"]], [3, 5, 10, 15, 20])
+        self.assertAlmostEqual(cv["anchors"][0]["value_yi"], 25.0 + 3 * 5.1)
+        self.assertAlmostEqual(cv["anchors"][0]["per_share"], 40.3)
+        self.assertAlmostEqual(cv["anchors"][0]["margin_pct"], (40.3 - 50) / 40.3 * 100)
+
+    def test_negative_ex_cash_marks_pe_not_applicable(self):
+        annual = [{"date": "2025-12-31", "net_profit_total": 5.1e8}]
+        latest = {"date": "2026-09-30", "cash": 6e9}
+        cv = _cash_valuation(annual, latest, {"total_shares": 1e8}, 5e9)
+        self.assertTrue(cv["negative_ex_cash"])
+        self.assertAlmostEqual(cv["ex_cash_cap_yi"], -10.0)
+        self.assertIsNone(cv["ex_cash_pe"])
+        self.assertEqual(len(cv["anchors"]), 5)            # 现金底仓仍可计算
+
+    def test_missing_or_negative_profit_disables_anchor(self):
+        latest = {"date": "2026-09-30", "cash": 2.5e9}
+        cv = _cash_valuation([{"date": "2025-12-31"}], latest,
+                             {"total_shares": 1e8}, 5e9)
+        self.assertEqual(cv["anchors"], [])
+        self.assertIn("净利润总额", cv["reason"])
+        cv = _cash_valuation([{"date": "2025-12-31", "net_profit_total": -1e8}],
+                             latest, {"total_shares": 1e8}, 5e9)
+        self.assertEqual(cv["anchors"], [])
+        self.assertIn("非正", cv["reason"])
+
+    def test_financial_industry_not_applicable(self):
+        cv = _cash_valuation([{"date": "2025-12-31", "net_profit_total": 5e8}],
+                             {"date": "2026-09-30", "cash": 1e9},
+                             {"total_shares": 1e8}, 5e9, "银行")
+        self.assertFalse(cv["applicable"])
+        self.assertEqual(cv["reason"], "金融股不适用")
+
+
+class ValuationScoreTest(unittest.TestCase):
+    """V 分机构口径：目标价空间 40 + 预测 PE 20 + 净利增速 40。"""
+
+    def _data(self):
+        return {
+            "meta": {"price": 100.0, "pe": 20.0},
+            "forecast": {
+                "available": True,
+                "target_price": 130.0,
+                "coverage": 5,
+                "forecasts": [
+                    {"year": 2026, "pe": 18.0, "net_profit_yoy": 20.0},
+                    {"year": 2027, "pe": 16.0, "net_profit_yoy": 15.0},
+                ],
+            },
+            "financials": {"annual": [{"year": 2025, "net_profit": 10e8}]},
+        }
+
+    def test_three_parts_weighted(self):
+        v = _valuation_score(self._data())
+        self.assertAlmostEqual(v["parts"][0]["score"], 100.0)       # 目标价 +30%
+        self.assertAlmostEqual(v["parts"][1]["score"], 77.7778, places=3)
+        self.assertAlmostEqual(v["parts"][2]["score"], 81.25, places=2)
+        self.assertAlmostEqual(v["score"], 88.1, places=1)
+
+    def test_missing_target_price_renormalizes(self):
+        data = self._data()
+        data["forecast"].pop("target_price")
+        v = _valuation_score(data)
+        self.assertIsNone(v["parts"][0]["score"])
+        self.assertAlmostEqual(v["score"], 80.1, places=1)
+
+    def test_target_price_without_price_does_not_break(self):
+        data = self._data()
+        data["meta"]["price"] = None
+        v = _valuation_score(data)
+        self.assertIsNone(v["parts"][0]["score"])
+        self.assertIsNotNone(v["score"])       # 预测 PE + 增速仍可计算
+
+    def test_no_coverage_returns_none(self):
+        data = self._data()
+        data["forecast"] = {"available": False, "forecasts": [], "target_price": None, "coverage": 0}
+        v = _valuation_score(data)
+        self.assertIsNone(v["score"])
+        self.assertEqual(v["grade"], "数据不足")
+
+    def test_negative_base_disables_growth(self):
+        data = self._data()
+        data["financials"]["annual"][0]["net_profit"] = -1e8
+        v = _valuation_score(data)
+        self.assertIsNone(v["parts"][2]["score"])
+        self.assertIsNone(v["score"])
+
+    def test_no_coverage_keeps_quality_score(self):
+        raw = load_bundle(FIXTURE)
+        data = build_report_data(raw["calls"], raw["code"])
+        data["forecast"] = {"available": False, "forecasts": [], "target_price": None,
+                            "coverage": 0, "rating": {}}
+        data = compute_scores(data)
+        self.assertIsNotNone(data["quality"]["score"])
+        self.assertIsNone(data["valuation_score"]["score"])
+        self.assertEqual(data["decision"]["key"], "unknown")
+
+
+class DecisionRulesTest(unittest.TestCase):
+    def test_critical_unknown_blocks_buy(self):
+        raw = load_bundle(FIXTURE)
+        data = build_report_data(raw["calls"], raw["code"])
+        q = {"score": 80, "coverage": 100.0}
+        checks = [{"key": "cfo_ni", "name": "利润含金量", "status": "unknown"}]
+        dq = _data_quality(data, q, checks)
+        self.assertTrue(any("利润含金量" in x for x in dq["buy_blockers"]))
+
+    def _dq(self, blockers=None):
+        return {"buy_blockers": blockers or []}
+
+    def test_buy_requires_complete_data(self):
+        d = _decision({"score": 80}, {"score": 70}, [], self._dq())
+        self.assertEqual(d["key"], "buy")
+        d = _decision({"score": 80}, {"score": 70}, [], self._dq(["机构覆盖 1 家（少于 3 家）"]))
+        self.assertEqual(d["key"], "watch")
+        self.assertIn("机构覆盖", d["reason"])
+
+    def test_high_quality_bands(self):
+        self.assertEqual(_decision({"score": 75}, {"score": 65}, [], self._dq())["key"], "buy")
+        self.assertEqual(_decision({"score": 75}, {"score": 50}, [], self._dq())["key"], "watch_price")
+        self.assertEqual(_decision({"score": 75}, {"score": 35}, [], self._dq())["key"], "expensive")
+
+    def test_medium_high_quality_needs_higher_v(self):
+        self.assertEqual(_decision({"score": 70}, {"score": 80}, [], self._dq())["key"], "buy")
+        self.assertEqual(_decision({"score": 70}, {"score": 70}, [], self._dq())["key"], "buy_ok")
+        self.assertEqual(_decision({"score": 70}, {"score": 50}, [], self._dq())["key"], "watch")
+        self.assertEqual(_decision({"score": 70}, {"score": 49}, [], self._dq())["key"], "avoid")
+
+    def test_medium_quality_small_position_only(self):
+        self.assertEqual(_decision({"score": 60}, {"score": 75}, [], self._dq())["key"], "buy_small")
+        self.assertEqual(_decision({"score": 60}, {"score": 74}, [], self._dq())["key"], "watch")
+        self.assertEqual(_decision({"score": 60}, {"score": 49}, [], self._dq())["key"], "avoid")
+
+    def test_weak_quality_trial_only(self):
+        self.assertEqual(_decision({"score": 50}, {"score": 80}, [], self._dq())["key"], "buy_trial")
+        self.assertEqual(_decision({"score": 50}, {"score": 79}, [], self._dq())["key"], "watch")
+        self.assertEqual(_decision({"score": 50}, {"score": 64}, [], self._dq())["key"], "avoid")
+
+    def test_very_low_quality_never_buys(self):
+        d = _decision({"score": 44}, {"score": 95}, [], self._dq())
+        self.assertEqual(d["key"], "avoid")
+        self.assertIn("禁止买入", d["reason"])
+
+    def test_missing_or_fatal(self):
+        self.assertEqual(_decision({"score": None}, {"score": 80}, [], self._dq())["key"], "unknown")
+        self.assertEqual(_decision({"score": 80}, {"score": 80}, ["净资产为负"], self._dq())["key"], "avoid")
 
 
 if __name__ == "__main__":

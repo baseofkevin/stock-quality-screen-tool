@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             raw = fetch_all(args.stock_code, timeout=args.timeout)
         data = build_report_data(raw["calls"], raw["code"])
+        data["data_gaps"] = raw.get("errors") or []
         data = compute_scores(data)
         validate(data)
         html_text = render_html(data)
@@ -84,10 +85,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.quiet:
         d = data["decision"]
+        dq = data.get("data_quality") or {}
+        vs = data["valuation_score"].get("score")
+        v_text = f"{vs:.1f}" if vs is not None else "—"
         print(f"已生成  {target}")
         print(f"  质量分 Q {data['quality']['score']:.1f} / 100   "
-              f"估值分 V {data['valuation_score']['score']:.1f} / 100   "
-              f"置信度 {data['confidence']} / 100")
+              f"估值分 V {v_text} / 100")
+        print(f"  数据    风险检查 {dq.get('risk_known', '—')}/{dq.get('risk_total', '—')}；"
+              f"机构覆盖 {dq.get('institution_coverage', '—')} 家")
         print(f"  结论    {d['label']}（{d['reason']}）")
         print(f"  文件    {target.stat().st_size / 1024:.1f} KB")
         gaps = raw.get("errors") or []

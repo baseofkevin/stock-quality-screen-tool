@@ -6,7 +6,7 @@ import math
 from typing import Any
 
 import config
-from screen.util import cagr, clamp, div, inverse, linear, mean, median, stdev
+from screen.util import cagr, div, inverse, linear, mean, median, num, stdev
 
 STATUS_LABEL = {"hit": "命中", "clear": "通过", "unknown": "数据不足"}
 
@@ -122,8 +122,20 @@ def _quality(data: dict[str, Any]) -> dict[str, Any]:
     total = (sum(float(g["score"]) for g in available) / weight * 100.0) if weight else None
     coverage = (sum(g["weight"] * g["coverage"] / 100.0 for g in groups) / sum(g["weight"] for g in groups) * 100.0
                 if groups else 0.0)
-    grade = ("高品质" if total is not None and total >= 75 else
-             ("中等" if total is not None and total >= 55 else "偏低")) if total is not None else "数据不足"
+    if total is None:
+        grade = "数据不足"
+    elif total >= 85:
+        grade = "优秀"
+    elif total >= 75:
+        grade = "良好"
+    elif total >= 65:
+        grade = "中等偏上"
+    elif total >= 55:
+        grade = "中等"
+    elif total >= 45:
+        grade = "偏弱"
+    else:
+        grade = "差"
     return {
         "score": round(total, 1) if total is not None else None,
         "grade": grade,
@@ -271,55 +283,232 @@ def _fatal(data: dict[str, Any], checks: list[dict[str, Any]]) -> list[str]:
     return fatal
 
 
+def _forecast_metrics(data: dict[str, Any]) -> dict[str, Any]:
+    """从机构预测中提取 V 分所需的三个原始值。
+
+    - 目标价空间 = 目标价 / 现价 - 1；
+    - 预测 PE 变化 = 当前 PE / 预测 PE - 1，正数表示预测 PE 更低；
+    - 未来净利增速 = 未来 1~3 年 net_profit_yoy 均值，缺失时用复合增速兜底。
+    """
+    fc = data.get("forecast") or {}
+    forecasts = [f for f in (fc.get("forecasts") or []) if isinstance(f, dict)]
+    meta = data.get("meta") or {}
+
+    price = num(meta.get("price"))
+    target = num(fc.get("target_price"))
+    target_upside = ((target / price - 1.0) * 100.0
+                     if (target is not None and target > 0 and price and price > 0) else None)
+
+    current_pe = num(meta.get("pe"))
+    forecast_pe = None
+    forecast_pe_year = None
+    for f in forecasts:
+        pe = num(f.get("pe"))
+        if pe is not None and pe > 0:
+            forecast_pe = pe
+            forecast_pe_year = f.get("year")
+            break
+    pe_change = ((current_pe / forecast_pe - 1.0) * 100.0
+                 if (current_pe is not None and current_pe > 0
+                     and forecast_pe is not None and forecast_pe > 0) else None)
+
+    annual = (data.get("financials") or {}).get("annual") or []
+    base = annual[-1] if annual else {}
+    base_np = num(base.get("net_profit"))
+    growth = None
+    growth_count = 0
+    growth_reason = ""
+    if base_np is None:
+        growth_reason = "缺少最近年报净利润"
+    elif base_np <= 0:
+        growth_reason = "最近年报亏损，增速不参与"
+    else:
+        values = [num(f.get("net_profit_yoy")) for f in forecasts[:3]]
+        values = [v for v in values if v is not None]
+        if values:
+            growth = mean(values)
+            growth_count = len(values)
+        else:
+            last = None
+            last_year = None
+            for f in reversed(forecasts):
+                np_yi = num(f.get("net_profit_yi"))
+                if np_yi is not None and np_yi > 0:
+                    last = np_yi * 1e8
+                    last_year = f.get("year")
+                    break
+            base_year = base.get("year")
+            years = (last_year - base_year) if (last_year is not None and base_year is not None) else None
+            if last is not None and years is not None and years > 0:
+                growth = ((last / base_np) ** (1.0 / years) - 1.0) * 100.0
+                growth_count = years
+            else:
+                growth_reason = "机构预测不足"
+    if growth is None and not growth_reason:
+        growth_reason = "机构预测不足"
+
+    return {
+        "target_price": target,
+        "target_upside": target_upside,
+        "current_pe": current_pe,
+        "forecast_pe": forecast_pe,
+        "forecast_pe_year": forecast_pe_year,
+        "pe_change": pe_change,
+        "growth": growth,
+        "growth_count": growth_count,
+        "growth_reason": growth_reason,
+    }
+
+
 def _valuation_score(data: dict[str, Any]) -> dict[str, Any]:
-    val = data["valuation"]
-    metrics = val.get("metrics") or {}
-    pcts = [m["percentile"] for m in metrics.values() if m.get("percentile") is not None]
-    multiple_score = (100.0 - mean(pcts)) if pcts else None
+    """机构口径 V 分：机构估值 60% + 未来净利增速 40%。
 
-    fcf_yield = data["meta"].get("fcf_yield")
-    fcf_score = clamp(fcf_yield / config.REQUIRED_FCF_YIELD * 100.0) if fcf_yield is not None else None
+    机构估值内部：目标价空间 40 + 预测 PE 相对当前 PE 20。
+    没有机构覆盖（或缺少估值/增速任一类）时 V 为空，但 Q 分仍正常计算。
+    """
+    m = _forecast_metrics(data)
 
-    dcf = data.get("dcf") or {}
-    dcf_score = linear(dcf.get("margin_pct"), -30, 30, 100) if dcf.get("applicable") else None
+    def _score(value: float | None, key: str) -> float | None:
+        if value is None:
+            return None
+        low, high = config.VALUATION_RANGES[key]
+        return linear(value, low, high, 100)
+
+    target_score = _score(m["target_upside"], "target_upside")
+    pe_score = _score(m["pe_change"], "forecast_pe")
+    growth_score = _score(m["growth"], "profit_growth")
+
+    if m["target_price"] is not None and m["target_upside"] is not None:
+        target_raw = f"目标价 {_n(m['target_price'])} 元（{m['target_upside']:+.1f}%）"
+    elif m["target_price"] is not None:
+        target_raw = f"目标价 {_n(m['target_price'])} 元（现价缺失）"
+    else:
+        target_raw = "无目标价"
+    if m["current_pe"] is not None and m["forecast_pe"] is not None:
+        year = f"{m['forecast_pe_year']}E" if m["forecast_pe_year"] else "预测"
+        pe_raw = f"当前 {_n(m['current_pe'])}x → {year} {_n(m['forecast_pe'])}x"
+    else:
+        pe_raw = "缺少当前 PE 或预测 PE"
+    growth_raw = (f"未来 {m['growth_count']} 年均值 {m['growth']:+.1f}%"
+                  if m["growth"] is not None else m["growth_reason"])
 
     parts = [
-        {"key": "multiples", "label": "历史分位得分", "score": multiple_score,
-         "max": config.VALUATION_WEIGHTS["multiples"], "raw": f"均值分位 {mean(pcts):.1f}%" if pcts else "—"},
-        {"key": "fcf_yield", "label": "FCF 收益率", "score": fcf_score,
-         "max": config.VALUATION_WEIGHTS["fcf_yield"], "raw": _p(fcf_yield)},
-        {"key": "dcf", "label": "DCF 折价", "score": dcf_score,
-         "max": config.VALUATION_WEIGHTS["dcf"], "raw": _p(dcf.get("margin_pct")) if dcf.get("applicable") else "不适用"},
+        {"key": "target_upside", "label": "机构目标价空间", "score": target_score,
+         "max": config.VALUATION_WEIGHTS["target_upside"], "raw": target_raw},
+        {"key": "forecast_pe", "label": "预测 PE 相对当前 PE", "score": pe_score,
+         "max": config.VALUATION_WEIGHTS["forecast_pe"], "raw": pe_raw},
+        {"key": "profit_growth", "label": "预期未来净利增速", "score": growth_score,
+         "max": config.VALUATION_WEIGHTS["profit_growth"], "raw": growth_raw},
     ]
     available = [p for p in parts if p["score"] is not None]
     max_available = sum(p["max"] for p in available)
-    total = (sum(p["score"] * p["max"] / 100.0 for p in available) / max_available * 100.0) if max_available else None
-    # 上面的加权方式把每个 part 变成 0..100，再按权重归一
-    grade = ("便宜" if total is not None and total >= 65 else
-             ("合理" if total is not None and total >= 45 else "偏贵")) if total is not None else "数据不足"
+    has_valuation = target_score is not None or pe_score is not None
+    has_growth = growth_score is not None
+    total = (sum(p["score"] * p["max"] / 100.0 for p in available) / max_available * 100.0
+             if (max_available and has_valuation and has_growth) else None)
+    if total is None:
+        grade = "数据不足"
+    elif total >= 80:
+        grade = "明显低估"
+    elif total >= 65:
+        grade = "低估"
+    elif total >= 50:
+        grade = "合理"
+    elif total >= 35:
+        grade = "偏高"
+    else:
+        grade = "明显高估"
     return {"score": round(total, 1) if total is not None else None, "grade": grade,
-            "parts": parts, "coverage": round(max_available / 100.0 * 100.0, 1)}
+            "parts": parts, "coverage": round(max_available, 1)}
 
 
-def _confidence(data: dict[str, Any], q: dict[str, Any], v: dict[str, Any]) -> int:
-    score = 100.0
-    n = len(data["financials"].get("annual") or [])
-    score -= {5: 0, 4: 8, 3: 18, 2: 32}.get(n, 45)
-    score -= max(0.0, 25.0 - (q.get("coverage") or 0) * 0.25)
-    if not data["valuation"].get("available"):
-        score -= 15
-    elif (data["valuation"].get("sample") or {}).get("points", 0) < 24:
-        score -= 5
-    if not data.get("dcf", {}).get("applicable"):
-        score -= 5
-    if data["meta"].get("market_cap_yi") is None:
-        score -= 10
-    coverage = (data.get("forecast") or {}).get("coverage") or 0
-    if coverage == 0:
-        score -= 8
-    elif coverage < 3:
-        score -= 4
-    return int(clamp(score))
+def _data_quality(data: dict[str, Any], q: dict[str, Any], checks: list[dict[str, Any]]) -> dict[str, Any]:
+    """数据完整度：只做展示和“可买”前置条件，不再生成 0~100 置信度。"""
+    total = len(checks)
+    unknown_items = [c for c in checks if c.get("status") == "unknown"]
+    known = total - len(unknown_items)
+    critical_unknown = [
+        c.get("name") or c.get("key")
+        for c in unknown_items
+        if c.get("key") in config.BUY_CRITICAL_CHECKS
+    ]
+    fc = data.get("forecast") or {}
+    coverage = int(fc.get("coverage") or 0)
+    q_coverage = float(q.get("coverage") or 0.0)
+
+    blockers: list[str] = []
+    if coverage < config.BUY_MIN_INSTITUTION_COVERAGE:
+        blockers.append(f"机构覆盖 {coverage} 家（少于 {config.BUY_MIN_INSTITUTION_COVERAGE} 家）")
+    if q_coverage < config.BUY_MIN_QUALITY_COVERAGE:
+        blockers.append(f"Q 数据覆盖 {q_coverage:.0f}%（低于 {config.BUY_MIN_QUALITY_COVERAGE:.0f}%）")
+    if critical_unknown:
+        blockers.append("关键风险检查缺失：" + "、".join(critical_unknown))
+
+    return {
+        "risk_total": total,
+        "risk_known": known,
+        "risk_unknown": len(unknown_items),
+        "critical_unknown": critical_unknown,
+        "institution_coverage": coverage,
+        "q_coverage": round(q_coverage, 1),
+        "buy_blockers": blockers,
+    }
+
+
+def _decision(q: dict[str, Any], v: dict[str, Any], fatal: list[str],
+              data_quality: dict[str, Any]) -> dict[str, Any]:
+    """质量调整后的估值门槛：Q 越低，要求的 V 越高；Q<45 禁止买入。"""
+    qs, vs = q.get("score"), v.get("score")
+    if fatal:
+        return {"key": "avoid", "label": "回避", "reason": "出现致命风险：" + "；".join(fatal)}
+    if qs is None or vs is None:
+        return {"key": "unknown", "label": "数据不足，不下结论", "reason": "质量分或估值分无法计算"}
+
+    if qs < config.QUALITY_HARD_FLOOR:
+        return {"key": "avoid", "label": "回避", "reason": f"质量分 {qs:.1f} 低于 {config.QUALITY_HARD_FLOOR:.0f}，禁止买入"}
+
+    if qs >= 75:
+        if vs >= config.BUY_MIN_V["high"]:
+            result = {"key": "buy", "label": "推荐买入", "reason": "质量好且估值便宜"}
+        elif vs >= 50:
+            result = {"key": "watch_price", "label": "好公司，等价格", "reason": "质量通过，估值尚未到舒服区间"}
+        elif vs >= 35:
+            result = {"key": "expensive", "label": "好公司，但偏贵，等价格", "reason": "质量通过，估值偏贵"}
+        else:
+            result = {"key": "expensive", "label": "好公司，但太贵", "reason": "质量通过，估值明显偏贵"}
+    elif qs >= 65:
+        if vs >= 80:
+            result = {"key": "buy", "label": "推荐买入", "reason": "质量中等偏上，估值明显低估"}
+        elif vs >= config.BUY_MIN_V["medium_high"]:
+            result = {"key": "buy_ok", "label": "可买", "reason": "质量中等偏上，估值便宜"}
+        elif vs >= 50:
+            result = {"key": "watch", "label": "观察", "reason": "质量中等偏上，估值不够便宜"}
+        else:
+            result = {"key": "avoid", "label": "回避", "reason": "质量中等偏上，但估值不便宜"}
+    elif qs >= 55:
+        if vs >= config.BUY_MIN_V["medium"]:
+            result = {"key": "buy_small", "label": "小仓买入", "reason": "质量一般，估值足够便宜，仅小仓"}
+        elif vs >= 50:
+            result = {"key": "watch", "label": "观察", "reason": "质量一般，估值不够便宜"}
+        else:
+            result = {"key": "avoid", "label": "回避", "reason": "质量一般且估值不便宜"}
+    else:
+        if vs >= config.BUY_MIN_V["weak"]:
+            result = {"key": "buy_trial", "label": "小仓试错", "reason": "质量偏弱，只在明显低估时小仓"}
+        elif vs >= 65:
+            result = {"key": "watch", "label": "观察", "reason": "质量偏弱，估值不够便宜"}
+        else:
+            result = {"key": "avoid", "label": "回避", "reason": "质量偏弱且估值不便宜"}
+
+    # 数据不完整时，所有买入类结论降为观察，但不改变 Q<45 的回避。
+    blockers = data_quality.get("buy_blockers") or []
+    if result["key"] in config.BUY_KEYS and blockers:
+        return {
+            "key": "watch",
+            "label": "观察，等待数据完整",
+            "reason": f"按质量与估值可{result['label']}，但" + "；".join(blockers) + "，暂不买入",
+        }
+    return result
 
 
 def _expectation_flags(data: dict[str, Any], v: dict[str, Any]) -> list[str]:
@@ -387,25 +576,6 @@ def _moat(data: dict[str, Any]) -> dict[str, Any]:
     reasons.append(f"ROIC 高于 WACC 的年度：{above}/{len(ys)}")
     return {"level": level, "score": round(score, 1) if score is not None else None, "reasons": reasons}
 
-def _decision(q: dict[str, Any], v: dict[str, Any], fatal: list[str], confidence: int) -> dict[str, Any]:
-    qs, vs = q.get("score"), v.get("score")
-    if fatal:
-        return {"key": "avoid", "label": "回避", "reason": "出现致命风险：" + "；".join(fatal)}
-    if qs is None or vs is None:
-        return {"key": "unknown", "label": "数据不足，不下结论", "reason": "质量分或估值分无法计算"}
-    if confidence < 60:
-        return {"key": "unknown", "label": "数据不足，不下结论", "reason": f"数据置信度仅 {confidence}/100"}
-    if qs >= 75 and vs >= 65:
-        return {"key": "buy", "label": "可买（初筛通过）", "reason": "质量与估值同时通过"}
-    if qs >= 75 and vs >= 45:
-        return {"key": "watch_price", "label": "好公司，等价格", "reason": "质量通过，估值尚未到舒服区间"}
-    if qs >= 75:
-        return {"key": "expensive", "label": "好公司，但太贵", "reason": "质量通过，估值明显偏贵"}
-    if qs >= 55:
-        return {"key": "watch", "label": "观察，不建议现在买", "reason": "质量中等，缺少足够安全边际"}
-    return {"key": "avoid", "label": "回避", "reason": "质量分低于 55"}
-
-
 def _tracking(data: dict[str, Any], q: dict[str, Any]) -> list[dict[str, str]]:
     latest = _latest(data)
     ys = _years(data)
@@ -439,14 +609,14 @@ def compute_scores(data: dict[str, Any]) -> dict[str, Any]:
     v = _valuation_score(data)
     checks = _risk_checks(data)
     fatal = _fatal(data, checks)
-    confidence = _confidence(data, q, v)
-    decision = _decision(q, v, fatal, confidence)
+    data_quality = _data_quality(data, q, checks)
+    decision = _decision(q, v, fatal, data_quality)
     data["quality"] = q
     data["moat"] = _moat(data)
     data["valuation_score"] = v
     data["risks"] = {"checks": checks, "fatal": fatal, "hits": sum(1 for c in checks if c["status"] == "hit")}
+    data["data_quality"] = data_quality
     data["decision"] = decision
-    data["confidence"] = confidence
     data["flags"] = _expectation_flags(data, v)
     data["tracking"] = _tracking(data, q)
     return data

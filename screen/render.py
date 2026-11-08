@@ -330,6 +330,7 @@ def _section_risks(data: dict[str, Any]) -> str:
     checks = risks.get("checks") or []
     hits = sum(1 for c in checks if c.get("status") == "hit")
     unknown = sum(1 for c in checks if c.get("status") == "unknown")
+    known = len(checks) - unknown
     rows = []
     for c in checks:
         rows.append(
@@ -349,7 +350,7 @@ def _section_risks(data: dict[str, Any]) -> str:
   <h2>二、经营质量与风险</h2>
   <p class="muted">10 项高信号检查，全部由同一批年报数据计算；未判定不当作通过。</p>
   <div class="grid">
-    <div class="metric"><div class="k">检查项</div><div class="v">{len(checks)}</div><div class="note">命中 {hits} 项；数据不足 {unknown} 项</div></div>
+    <div class="metric"><div class="k">风险检查</div><div class="v">{known} / {len(checks)}</div><div class="note">已知 {known} 项；命中 {hits} 项；数据不足 {unknown} 项</div></div>
     <div class="metric"><div class="k">风险状态</div><div class="v">{'有命中' if hits else '无命中'}</div><div class="note">命中不等于造假，只表示需要追问</div></div>
   </div>
   {fatal_html}
@@ -396,17 +397,24 @@ def _section_valuation(data: dict[str, Any]) -> str:
             f"<td>{n(f.get('pe'))}</td>"
             "</tr>"
         )
+    rating = fc.get("rating") or {}
     coverage = fc.get("coverage") or 0
-    coverage_note = f"覆盖机构 {coverage} 家" if coverage else "覆盖机构数未披露"
-    if coverage and coverage < 3:
-        coverage_note += "；低于 3 家，预测参考价值有限"
+    rating_coverage = fc.get("rating_coverage") or 0
+    if frows:
+        coverage_note = f"覆盖机构 {coverage} 家" if coverage else "覆盖机构数未披露"
+        if coverage and coverage < 3:
+            coverage_note += "；低于 3 家，预测参考价值有限"
+    elif rating:
+        coverage_note = (f"暂无盈利预测；评级记录 {rating.get('records', 0)} 条、"
+                         f"覆盖机构 {rating_coverage} 家")
+    else:
+        coverage_note = "暂无机构覆盖"
     target = fc.get("target_price")
     price = data["meta"].get("price")
     target_note = "无目标价"
     if target:
         upside = ((target / price - 1) * 100) if price else None
-        target_note = f"{n(target)} 元" + (f"（较现价 {pct(upside)}）" if upside is not None else "")
-    rating = fc.get("rating") or {}
+        target_note = f"{n(target)} 元" + (f"（较现价 {upside:+.1f}%）" if upside is not None else "")
     rating_note = "暂无评级数据"
     if rating:
         rating_note = (f"买入 {rating.get('buy', 0)} 条、增持 {rating.get('increase', 0)} 条；"
@@ -423,25 +431,91 @@ def _section_valuation(data: dict[str, Any]) -> str:
         ]
     dcf_html = "".join(f"<tr><td>{esc(k)}</td><td>{esc(v)}</td></tr>" for k, v in dcf_rows)
 
+    cv = data.get("cash_valuation") or {}
+
+    def _money(value: Any) -> str:
+        return "—" if value is None else f"{n(value)} 亿"
+
+    cv_rows = []
+    if cv and any(cv.get(k) is not None for k in
+                  ("market_cap_yi", "cash_yi", "net_profit_yi")):
+        cash_note = f"最新报告期 {cv.get('cash_period')}" if cv.get("cash_period") else ""
+        profit_note = f"最近年报 {cv.get('profit_period')}；营业收入 × 净利率近似" if cv.get("profit_period") else "营业收入 × 净利率近似"
+        ex_cash_note = "总市值 − 货币资金"
+        if cv.get("negative_ex_cash"):
+            ex_cash_note += "；市值低于货币资金"
+        pe = cv.get("ex_cash_pe")
+        if pe is not None:
+            pe_text = f"{n(pe)}x"
+        elif cv.get("negative_ex_cash"):
+            pe_text = "不适用（市值低于货币资金）"
+        else:
+            pe_text = "不适用"
+        cv_rows = [
+            ("总市值", _money(cv.get("market_cap_yi")), ""),
+            ("货币资金", _money(cv.get("cash_yi")), cash_note),
+            ("货币资金/市值", pct(cv.get("cash_ratio_pct")), "现金底仓比例"),
+            ("有息负债", _money(cv.get("debt_yi")), "仅展示，不参与计算"),
+            ("扣现金市值", _money(cv.get("ex_cash_cap_yi")), ex_cash_note),
+            ("最近年报净利润总额", _money(cv.get("net_profit_yi")), profit_note),
+            ("扣现金 PE", pe_text, "扣现金市值 ÷ 净利润总额"),
+            ("盈利收益率", pct(cv.get("earnings_yield_pct")), "净利润总额 ÷ 总市值"),
+        ]
+    cv_html = ""
+    if cv_rows:
+        body = "".join(
+            f"<tr><td>{esc(k)}</td><td>{esc(v)}</td><td>{esc(note)}</td></tr>"
+            for k, v, note in cv_rows)
+        cv_html = (
+            "<table><thead><tr><th>指标</th><th>数值</th><th>说明</th></tr></thead>"
+            f"<tbody>{body}</tbody></table>"
+        )
+    else:
+        cv_html = f'<p class="small">不适用：{esc(cv.get("reason") or "数据不足")}</p>'
+
+    anchor_rows = []
+    for anchor in cv.get("anchors") or []:
+        anchor_rows.append(
+            "<tr>"
+            f"<td>{esc(anchor.get('years'))} 年</td>"
+            f"<td>{_money(anchor.get('value_yi'))}</td>"
+            f"<td>{n(anchor.get('per_share')) + ' 元' if anchor.get('per_share') is not None else '—'}</td>"
+            f"<td>{pct(anchor.get('margin_pct'))}</td>"
+            "</tr>"
+        )
+    anchor_body = "".join(anchor_rows) or (
+        f'<tr><td colspan="4">不适用：{esc(cv.get("reason") or "数据不足")}</td></tr>')
+    anchor_html = (
+        "<table><thead><tr><th>年限 N</th><th>底线价值</th><th>每股底线</th>"
+        f"<th>安全边际</th></tr></thead><tbody>{anchor_body}</tbody></table>"
+    )
+
     flags = data.get("flags") or []
     flags_html = ""
     if flags:
         flags_html = '<div class="flags"><b>预期差提示</b><ul>' + "".join(f"<li>{esc(x)}</li>" for x in flags) + "</ul></div>"
+    gaps = data.get("data_gaps") or []
+    gaps_html = ""
+    if gaps:
+        gaps_html = ('<div class="flags"><b>取数缺口</b><ul>' +
+                     "".join(f"<li>{esc(x.get('tool'))}：{esc(x.get('error'))}</li>" for x in gaps) +
+                     "</ul></div>")
 
     return f"""
 <section>
   <h2>三、企业估值与机构预期</h2>
-  <h3>历史估值分位</h3>
-  <p class="small">样本：{sample_note}。分位按自身历史，不与同业混用；PE 为负时不采用 PE。</p>
+  {gaps_html}
+  <h3>PE/PB/PS 历史分位及走势图</h3>
+  <p class="small">样本：{sample_note}。上表为全历史分位；下图为近 15 个季度周频走势，PE 为负时断线。
+     历史分位与走势图只展示，不进入 V 分。</p>
   <table>
     <thead><tr><th>指标</th><th>当前</th><th>历史分位</th><th>区间</th><th>样本点数</th></tr></thead>
     <tbody>{''.join(mrows) or '<tr><td colspan="5">暂无历史估值数据</td></tr>'}</tbody>
   </table>
 
-  <h3>近 15 个季度估值走势（周频）</h3>
   {valuation_charts}
 
-  <h3>机构未来盈利预期</h3>
+  <h3>机构对企业未来盈利的预期</h3>
   <p class="small">{esc(coverage_note)}。预测净利与营收单位为亿元；预测不是事实。</p>
   <table>
     <thead><tr><th>年度</th><th>预测营收（亿）</th><th>预测归母（亿）</th><th>预测 EPS</th><th>净利同比</th><th>对应 PE</th></tr></thead>
@@ -451,11 +525,20 @@ def _section_valuation(data: dict[str, Any]) -> str:
     <div class="metric"><div class="k">机构目标价</div><div class="v">{target_note}</div><div class="note">目标价 ≠ 本报告合理价</div></div>
     <div class="metric"><div class="k">评级分布</div><div class="v" style="font-size:14px">{esc(rating_note)}</div><div class="note">评级记录条数不等于覆盖机构数</div></div>
   </div>
-
-  <h3>本报告的估值</h3>
-  <table><tbody>{dcf_html or '<tr><td>DCF</td><td>不适用：' + esc(dcf.get('reason') or '数据不足') + '</td></tr>'}</tbody></table>
-  <p class="small">FCF 收益率：{pct(data['meta'].get('fcf_yield'))}；要求收益率 {pct(config.REQUIRED_FCF_YIELD)}。</p>
   {flags_html}
+
+  <h3>对企业进行 DCF 估值</h3>
+  <table><tbody>{dcf_html or '<tr><td>DCF</td><td>不适用：' + esc(dcf.get('reason') or '数据不足') + '</td></tr>'}</tbody></table>
+  <p class="small">FCF 收益率：{pct(data['meta'].get('fcf_yield'))}；要求收益率 {pct(config.REQUIRED_FCF_YIELD)}。
+     DCF 与 FCF 收益率只展示，不进入 V 分。</p>
+
+  <h3>用现金扣除与底线估值方式对企业进行估值</h3>
+  <p class="small">现金底仓直接用货币资金，不扣有息负债；净利润总额取最近年报，
+     按“营业收入 × 净利率”近似；年限 N 是情景假设，不是目标价。</p>
+  {cv_html}
+  <p class="small" style="margin-top:10px">底线价值 = 货币资金 + N × 最近年报净利润总额。
+     安全边际 =（底线价值 − 总市值）÷ 底线价值；正数表示市值低于底线。</p>
+  {anchor_html}
 </section>"""
 
 
@@ -463,7 +546,12 @@ def _section_score(data: dict[str, Any]) -> str:
     q = data.get("quality") or {}
     v = data.get("valuation_score") or {}
     decision = data.get("decision") or {}
-    confidence = data.get("confidence")
+    dq = data.get("data_quality") or {}
+    checks = ((data.get("risks") or {}).get("checks") or [])
+    risk_total = len(checks)
+    risk_hits = sum(1 for c in checks if c.get("status") == "hit")
+    risk_unknown = sum(1 for c in checks if c.get("status") == "unknown")
+    risk_known = risk_total - risk_unknown
     qs, vs = q.get("score"), v.get("score")
 
     qrows = []
@@ -489,24 +577,32 @@ def _section_score(data: dict[str, Any]) -> str:
 <section>
   <h2>四、综合评分</h2>
   <div class="grid">
-    <div class="metric"><div class="k">质量分 Q</div><div class="v">{n(qs, 1)}</div><div class="note">{esc(q.get('grade'))}</div>
+    <div class="metric"><div class="k">质量分 Q</div><div class="v">{n(qs, 1)}</div><div class="note">{esc(q.get('grade'))} · 风险检查 {risk_known}/{risk_total} 已知</div>
       {_bar(qs, _score_class(qs))}</div>
     <div class="metric"><div class="k">估值分 V</div><div class="v">{n(vs, 1)}</div><div class="note">{esc(v.get('grade'))}</div>
       {_bar(vs, _score_class(vs))}</div>
-    <div class="metric"><div class="k">置信度</div><div class="v">{n(confidence, 0)}</div><div class="note">年报、估值样本、字段完整度</div>
-      {_bar(confidence)}</div>
     <div class="metric"><div class="k">结论</div><div class="v" style="font-size:19px">{esc(decision.get('label'))}</div>
       <div class="note">{esc(decision.get('reason'))}</div></div>
   </div>
-  <h3>质量分构成</h3>
+  <h3>质量分构成（风险检查不计入 Q）</h3>
+  <p class="small">质量分只由五个质量维度构成；风险检查不重复计分。
+     当前风险检查：{risk_known}/{risk_total} 已知，命中 {risk_hits} 项，数据不足 {risk_unknown} 项。</p>
   <table><thead><tr><th>维度</th><th>得分</th><th>数据覆盖</th></tr></thead><tbody>{''.join(qrows)}</tbody></table>
-  <h3>估值分构成</h3>
+  <h3>估值分构成（机构口径）</h3>
   <table><thead><tr><th>维度</th><th>得分 / 100</th><th>原始值</th></tr></thead><tbody>{''.join(vrows)}</tbody></table>
+  <p class="small">V 分 = 目标价空间 40% + 预测 PE 20% + 未来净利增速 40%；缺失项按可用权重归一。
+     无机构覆盖时 V 不计算，但 Q 分正常展示。</p>
+  <p class="small">数据完整度：风险检查 {dq.get('risk_known', '—')}/{dq.get('risk_total', '—')} 已知；
+     机构覆盖 {dq.get('institution_coverage', '—')} 家；Q 数据覆盖 {pct(dq.get('q_coverage'))}。
+     可买还需满足：机构覆盖≥3 家、Q 覆盖≥80%、关键风险检查无缺失。</p>
   <div class="small">
-    决策规则：Q≥75 且 V≥65 → 可买；Q≥75 且 V 45~65 → 等价格；Q≥75 且 V&lt;45 → 太贵；
-    Q 55~75 → 观察；Q&lt;55 或致命项 → 回避；置信度&lt;60 → 不下结论。
+    决策规则（质量调整）：Q≥75：V≥65 推荐买入，50~65 等价格，35~50 偏贵，&lt;35 太贵；
+    Q65~75：V≥80 推荐，70~80 可买，50~70 观察，&lt;50 回避；
+    Q55~65：V≥75 小仓买入，50~75 观察，&lt;50 回避；
+    Q45~55：V≥80 小仓试错，65~80 观察，&lt;65 回避；
+    Q&lt;45：回避，禁止买入；Q 或 V 缺失 → 数据不足。
   </div>
-  <p class="small">机构预期只做“预期差提示”，不直接加减 Q/V 分数。</p>
+  <p class="small">机构预期直接决定 V 分；评级分布只展示，不参与打分。</p>
 </section>"""
 
 
@@ -536,14 +632,16 @@ def render_html(data: dict[str, Any]) -> str:
     key = decision.get("key", "unknown")
     price = meta.get("price")
     price_text = f"¥ {n(price)}" if price is not None else "价格未取得"
-    title = f"{meta.get('name')}（{meta.get('code')}）企业质量初筛"
+    generated_at = datetime.now()
+    title = (f"{meta.get('name')}（{meta.get('code')}）企业质量初筛 · "
+             f"{generated_at:%Y-%m-%d %H:%M:%S}")
     content = f"""
 <div class="hero">
   <h1>{esc(meta.get('name'))} <span style="font-size:15px;opacity:.75">{esc(meta.get('code'))}</span>
     <span class="badge {esc(key)}">{esc(decision.get('label'))}</span></h1>
   <div class="sub">{esc(meta.get('industry'))} · 企业质量初筛 · 只做定量判断</div>
   <div class="price">{price_text}<span style="font-size:13px;font-weight:400;opacity:.8;margin-left:10px">市值 {n(meta.get('market_cap_yi'))} 亿元</span></div>
-  <div class="meta">行情日期 {esc(meta.get('quote_date') or '—')} · 最新报告期 {esc(meta.get('latest_date') or '—')} · 生成 {datetime.now():%Y-%m-%d %H:%M}</div>
+  <div class="meta">行情日期 {esc(meta.get('quote_date') or '—')} · 最新报告期 {esc(meta.get('latest_date') or '—')} · 生成 {generated_at:%Y-%m-%d %H:%M:%S}</div>
 </div>
 {_section_business(data)}
 {_section_risks(data)}
@@ -556,9 +654,11 @@ def render_html(data: dict[str, Any]) -> str:
                "东方财富：RPT_F10_FN_MAINOP 产品分部、RPT_VALUEANALYSIS_DET 历史估值、"
                "RPT_F10_FINANCE_GCASHFLOW 资本支出。")
     method = ("质量分 Q：资本回报 30、现金创造力 25、资产负债表 20、成长与稳定 15、会计质量 10；"
-              "估值分 V：历史分位 50、FCF 收益率 30、DCF 折价 20。权重与阈值见 config.py。")
-    limits = ("年报不足 5 年、机构覆盖不足 3 家、估值样本过短时，结论会降级；"
-              "金融股与强周期股不适合直接套用 FCF/DCF。")
+              "估值分 V：机构目标价空间 40、预测 PE 相对当前 PE 20、未来净利增速 40。"
+              "历史分位、FCF、DCF 与现金底线只展示，不进入 V。权重与阈值见 config.py。")
+    limits = ("机构覆盖不足 3 家、Q 数据覆盖低于 80%、关键风险检查缺失时，不给出可买；"
+              "金融股与强周期股不适合直接套用 FCF/DCF。现金扣除块只展示，"
+              "不扣有息负债，净利润总额为营业收入×净利率的近似值，不进入 V 分。")
     disclaimer = ("本报告由规则程序生成，仅供初筛和后续研究参考，不构成投资建议。"
                   f"程序版本 {config.VERSION}。")
     html_text = template
