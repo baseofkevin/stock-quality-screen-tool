@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +24,44 @@ import eastmoney  # noqa: E402
 
 class DataError(RuntimeError):
     pass
+
+
+def _env_seconds_ms(name: str, default_ms: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(name, str(default_ms))) / 1000.0)
+    except (TypeError, ValueError):
+        return default_ms / 1000.0
+
+
+# 进程内全局节流：多个批量线程共用同一个腾讯接口调用节奏。
+# westock_client.js 里的 WESTOCK_INTERVAL 是“每个 node 进程”的间隔，
+# 4 个线程并发时实际请求速率会放大 4 倍，因此这里再加一道跨线程闸门。
+GLOBAL_INTERVAL = _env_seconds_ms("WESTOCK_GLOBAL_INTERVAL_MS", 1600)
+_GLOBAL_LOCK = threading.Lock()
+_NEXT_CALL_AT = 0.0
+
+
+def _throttle() -> None:
+    global _NEXT_CALL_AT
+    if GLOBAL_INTERVAL <= 0:
+        return
+    with _GLOBAL_LOCK:
+        now = time.monotonic()
+        wait = _NEXT_CALL_AT - now
+        if wait > 0:
+            time.sleep(wait)
+        _NEXT_CALL_AT = time.monotonic() + GLOBAL_INTERVAL
+
+
+_RETRY_MARKERS = (
+    "不是 JSON", "限频", "429", "超时", "timed out", "Timeout",
+    "连接", "ECONN", "network", "502", "503", "504",
+)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    text = str(exc)
+    return any(marker in text for marker in _RETRY_MARKERS)
 
 
 def normalize_code(raw: str) -> str:
@@ -50,14 +91,17 @@ def six(code: str) -> str:
 
 
 class WestockClient:
-    def __init__(self, timeout: float = 90.0):
+    def __init__(self, timeout: float = 90.0, retries: int = 0, retry_wait: float = 60.0):
         self.timeout = timeout
+        self.retries = max(0, int(retries))
+        self.retry_wait = max(0.0, float(retry_wait))
 
-    def call(self, tool: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _call_once(self, tool: str, params: dict[str, Any]) -> dict[str, Any]:
         cmd = ["node", str(CLIENT), "call", tool, json.dumps(params, ensure_ascii=False)]
         env = os.environ.copy()
         env.setdefault("WESTOCK_TIMEOUT", str(int(self.timeout * 1000)))
-        env.setdefault("WESTOCK_INTERVAL", "1200")
+        env.setdefault("WESTOCK_INTERVAL", "1600")
+        _throttle()
         try:
             proc = subprocess.run(
                 cmd, cwd=str(ROOT), env=env, capture_output=True, text=True,
@@ -76,15 +120,28 @@ class WestockClient:
             raise DataError(f"{tool} 返回失败：{obj.get('msg') or obj}")
         return obj
 
+    def call(self, tool: str, params: dict[str, Any]) -> dict[str, Any]:
+        last: DataError | None = None
+        for attempt in range(self.retries + 1):
+            try:
+                return self._call_once(tool, params)
+            except DataError as exc:
+                last = exc
+                if attempt >= self.retries or not _is_retryable(exc):
+                    raise
+                time.sleep(self.retry_wait + random.uniform(0, 5))
+        raise last or DataError(f"{tool} 调用失败")
+
 
 def _call(client: WestockClient, tool: str, params: dict[str, Any]) -> dict[str, Any]:
     return {"tool": tool, "params": params, "response": client.call(tool, params)}
 
 
-def fetch_all(code: str, timeout: float = 90.0) -> dict[str, Any]:
+def fetch_all(code: str, timeout: float = 90.0, retries: int = 0,
+              retry_wait: float = 60.0) -> dict[str, Any]:
     """返回 {code, calls, errors}；calls 与旧 raw bundle 兼容。"""
     c = normalize_code(code)
-    client = WestockClient(timeout=timeout)
+    client = WestockClient(timeout=timeout, retries=retries, retry_wait=retry_wait)
     calls: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
 

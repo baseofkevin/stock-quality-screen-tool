@@ -37,6 +37,35 @@ html-report/贵州茅台-企业质量初筛-20261108-213008.html
 python3 stock_report.py --stock-code 301101 --out-dir /tmp/初筛
 ```
 
+### CSV 批量模式
+
+`--stock-code` 单股票模式保留不变；需要批量时改用 `--csv-input`：
+
+```bash
+python3 stock_report.py \
+  --csv-input ../stock-kline-screen-tool/csv_output/选股_2026-11-06.csv
+```
+
+- 自动识别 `代码 / 股票代码 / 证券代码 / code` 列，支持 `600519`、`sh600519`、`600519.SH`。
+- 用多线程并发生成，默认 4 个线程；可用 `--workers 8` 调整。
+- 每只股票的报告仍写入 `html-report/`，批量文件名带代码：
+  `贵州茅台-sh600519-企业质量初筛-20261109-082004.html`。
+- 在原 CSV 末尾新增两列，不重排、不删除原有列：
+  - `综合评分`：只写 HTML「四、综合评分」里的最终结论，例如 `可买`、`观察，等待数据完整`；
+  - `HTML报告链接`：绝对 `file:///...` 链接，可直接在 Excel / LibreOffice 中点击。
+- 保留原 CSV 的 UTF-8 BOM、CRLF 换行、列顺序和文件权限；重复执行时更新这两列，不会重复追加。
+- 单只股票失败不影响其他股票：失败行写 `生成失败`，报告链接留空，命令最终退出码为 `1`。
+- **增量续跑**：再次执行同一条命令时，先扫描 `--out-dir` 中已有的
+  `*-{代码}-企业质量初筛-*.html`，能提取出结论的报告直接复用并回填 CSV，
+  只对缺失的股票重新抓数。中断后直接重跑即可，不需要从头开始。
+  `--force` 可忽略已有报告、强制全部重跑。
+- **进度不丢**：每完成一只股票就原子回写一次 CSV；按 `Ctrl-C` 会保存当前进度并退出，
+  下次运行继续补缺失部分。
+- **限频保护**：腾讯自选股调用有跨线程全局节流，默认每个请求间隔 1.6 秒
+  （环境变量 `WESTOCK_GLOBAL_INTERVAL_MS` 可调）；限频 / 非 JSON / 超时错误默认重试
+  2 次、每次等待 60 秒，可用 `--retries`、`--retry-wait` 调整。若仍然频繁限频，
+  可降低 `--workers` 或把 `WESTOCK_GLOBAL_INTERVAL_MS` 调大。
+
 离线重放旧采集包（仍然是 HTML 输出，不生成 JSON）：
 
 ```bash
@@ -208,6 +237,8 @@ stock-quality-screen/
     compute.py                 报表整理、FCF、分位、机构预期、DCF
     score.py                   Q/V、风险、决策、跟踪
     render.py                  五节 HTML
+    batch.py                   CSV 批量读写、结果列、file:/// 链接
+    summary.py                 从 HTML 提取综合评分结论
     validate.py                轻量校验
     util.py                    数值与统计工具
   providers/

@@ -1,20 +1,27 @@
 # -*- coding: utf-8 -*-
+import csv
+import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from urllib.parse import unquote, urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import stock_report  # noqa: E402
-from screen.fetch import load_bundle, normalize_code  # noqa: E402
+from screen.batch import (LINK_COLUMN, SCORE_COLUMN, ensure_result_columns,
+                          read_csv_table, report_uri, write_csv_table)  # noqa: E402
+from screen.fetch import DataError, load_bundle, normalize_code  # noqa: E402
 from screen.compute import (_cash_valuation, _margin_trend, _valuation_chart,
                             build_report_data)  # noqa: E402
-from screen.render import _margin_chart, _section_valuation  # noqa: E402
+from screen.render import _margin_chart, _section_valuation, render_html  # noqa: E402
 from screen.score import _data_quality, _decision, _valuation_score, compute_scores  # noqa: E402
+from screen.summary import SummaryError, extract_score_summary  # noqa: E402
 from providers.eastmoney import to_secucode  # noqa: E402
 
 FIXTURE = ROOT / "tests" / "fixtures" / "mini_bundle.json"
@@ -326,6 +333,158 @@ class DecisionRulesTest(unittest.TestCase):
     def test_missing_or_fatal(self):
         self.assertEqual(_decision({"score": None}, {"score": 80}, [], self._dq())["key"], "unknown")
         self.assertEqual(_decision({"score": 80}, {"score": 80}, ["净资产为负"], self._dq())["key"], "avoid")
+
+
+class ScoreSummaryTest(unittest.TestCase):
+    def test_extract_from_rendered_html(self):
+        raw = load_bundle(FIXTURE)
+        data = compute_scores(build_report_data(raw["calls"], raw["code"]))
+        summary = extract_score_summary(render_html(data))
+        self.assertEqual(summary.conclusion, data["decision"]["label"])
+        self.assertEqual(summary.quality, f"{data['quality']['score']:.1f}")
+        vs = data["valuation_score"]["score"]
+        self.assertEqual(summary.valuation, f"{vs:.1f}" if vs is not None else "—")
+
+    def test_missing_section_raises(self):
+        with self.assertRaises(SummaryError):
+            extract_score_summary("<html><body>没有评分区</body></html>")
+
+
+class CsvBatchTest(unittest.TestCase):
+    def _write_csv(self, path: Path, codes: list[tuple[str, str]]) -> None:
+        lines = ["\ufeff代码,名称,备注"]
+        lines.extend(f"{code},{name},保留" for code, name in codes)
+        path.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
+
+    def _read_csv(self, path: Path) -> list[dict[str, str]]:
+        text = path.read_bytes().decode("utf-8-sig")
+        return list(csv.DictReader(io.StringIO(text, newline="")))
+
+    def test_roundtrip_preserves_columns_bom_and_crlf(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "rows.csv"
+            self._write_csv(path, [("600519", "贵州茅台")])
+            table = read_csv_table(path)
+            ensure_result_columns(table)
+            table.rows[0][SCORE_COLUMN] = "可买"
+            table.rows[0][LINK_COLUMN] = report_uri(Path(td) / "报告.html")
+            write_csv_table(table)
+
+            self.assertTrue(path.read_bytes().startswith(b"\xef\xbb\xbf"))
+            self.assertIn(b"\r\n", path.read_bytes())
+            rows = self._read_csv(path)
+            self.assertEqual(rows[0]["名称"], "贵州茅台")
+            self.assertEqual(rows[0]["备注"], "保留")
+            self.assertEqual(rows[0][SCORE_COLUMN], "可买")
+            self.assertTrue(rows[0][LINK_COLUMN].startswith("file:///"))
+
+    def test_batch_cli_fills_score_and_link(self):
+        raw = load_bundle(FIXTURE)
+        expected = compute_scores(build_report_data(raw["calls"], raw["code"]))["decision"]["label"]
+
+        def fake_fetch(code, timeout=90.0, **kwargs):
+            return load_bundle(FIXTURE)
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            csv_path = td_path / "batch.csv"
+            out_dir = td_path / "reports"
+            self._write_csv(csv_path, [("600519", "贵州茅台")])
+            with patch("stock_report.fetch_all", side_effect=fake_fetch):
+                rc = stock_report.main([
+                    "--csv-input", str(csv_path), "--out-dir", str(out_dir),
+                    "--workers", "2", "--quiet",
+                ])
+            self.assertEqual(rc, 0)
+            rows = self._read_csv(csv_path)
+            self.assertEqual(rows[0][SCORE_COLUMN], expected)
+            link = rows[0][LINK_COLUMN]
+            self.assertTrue(link.startswith("file:///"))
+            report_path = Path(unquote(urlparse(link).path))
+            self.assertTrue(report_path.exists())
+            self.assertRegex(report_path.name,
+                             r"^贵州茅台-sh600519-企业质量初筛-\d{8}-\d{6}\.html$")
+
+    def test_second_run_reuses_existing_html_without_fetching(self):
+        raw = load_bundle(FIXTURE)
+        data = compute_scores(build_report_data(raw["calls"], raw["code"]))
+        expected = data["decision"]["label"]
+
+        def must_not_fetch(code, timeout=90.0, **kwargs):
+            raise AssertionError("已有报告时不应重新取数")
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            csv_path = td_path / "batch.csv"
+            out_dir = td_path / "reports"
+            out_dir.mkdir()
+            existing = out_dir / "贵州茅台-sh600519-企业质量初筛-20260101-000000.html"
+            existing.write_text(render_html(data), encoding="utf-8")
+            self._write_csv(csv_path, [("600519", "贵州茅台")])
+            with patch("stock_report.fetch_all", side_effect=must_not_fetch):
+                rc = stock_report.main([
+                    "--csv-input", str(csv_path), "--out-dir", str(out_dir),
+                    "--workers", "2", "--quiet",
+                ])
+            self.assertEqual(rc, 0)
+            rows = self._read_csv(csv_path)
+            self.assertEqual(rows[0][SCORE_COLUMN], expected)
+            report_path = Path(unquote(urlparse(rows[0][LINK_COLUMN]).path))
+            self.assertEqual(report_path, existing)
+            self.assertEqual(len(list(out_dir.glob("*.html"))), 1)
+
+    def test_force_regenerates_existing_report(self):
+        raw = load_bundle(FIXTURE)
+        data = compute_scores(build_report_data(raw["calls"], raw["code"]))
+        calls = {"n": 0}
+
+        def fake_fetch(code, timeout=90.0, **kwargs):
+            calls["n"] += 1
+            return load_bundle(FIXTURE)
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            csv_path = td_path / "batch.csv"
+            out_dir = td_path / "reports"
+            out_dir.mkdir()
+            existing = out_dir / "贵州茅台-sh600519-企业质量初筛-20260101-000000.html"
+            existing.write_text(render_html(data), encoding="utf-8")
+            self._write_csv(csv_path, [("600519", "贵州茅台")])
+            with patch("stock_report.fetch_all", side_effect=fake_fetch):
+                rc = stock_report.main([
+                    "--csv-input", str(csv_path), "--out-dir", str(out_dir),
+                    "--workers", "1", "--force", "--quiet",
+                ])
+            self.assertEqual(rc, 0)
+            self.assertEqual(calls["n"], 1)
+            rows = self._read_csv(csv_path)
+            report_path = Path(unquote(urlparse(rows[0][LINK_COLUMN]).path))
+            self.assertNotEqual(report_path, existing)
+            self.assertEqual(len(list(out_dir.glob("*.html"))), 2)
+
+    def test_batch_continues_after_one_failure(self):
+        def fake_fetch(code, timeout=90.0, **kwargs):
+            if code == "sz000001":
+                raise DataError("模拟取数失败")
+            return load_bundle(FIXTURE)
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            csv_path = td_path / "batch.csv"
+            self._write_csv(csv_path, [("600519", "贵州茅台"), ("000001", "平安银行")])
+            with patch("stock_report.fetch_all", side_effect=fake_fetch):
+                rc = stock_report.main([
+                    "--csv-input", str(csv_path), "--out-dir", str(td_path / "reports"),
+                    "--workers", "2", "--quiet",
+                ])
+            self.assertEqual(rc, 1)
+            raw = load_bundle(FIXTURE)
+            expected = compute_scores(build_report_data(raw["calls"], raw["code"]))["decision"]["label"]
+            rows = self._read_csv(csv_path)
+            self.assertEqual(rows[0][SCORE_COLUMN], expected)
+            self.assertTrue(rows[0][LINK_COLUMN].startswith("file:///"))
+            self.assertEqual(rows[1][SCORE_COLUMN], "生成失败")
+            self.assertEqual(rows[1][LINK_COLUMN], "")
 
 
 if __name__ == "__main__":

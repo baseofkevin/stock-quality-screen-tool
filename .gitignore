@@ -33,6 +33,7 @@ Thumbs.db
 !templates/report.html
 /examples/
 /html-report/
+/csv-input/
 
 # 输出目录 / 临时文件 / 本地原始数据
 /out/
