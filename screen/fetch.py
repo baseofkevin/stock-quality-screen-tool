@@ -129,7 +129,11 @@ class WestockClient:
                 last = exc
                 if attempt >= self.retries or not _is_retryable(exc):
                     raise
-                time.sleep(self.retry_wait + random.uniform(0, 5))
+                wait = self.retry_wait + random.uniform(0, 5)
+                print(f"[warn] {tool} 失败：{exc}；{wait:.0f} 秒后重试"
+                      f"（{attempt + 1}/{self.retries}）",
+                      file=sys.stderr, flush=True)
+                time.sleep(wait)
         raise last or DataError(f"{tool} 调用失败")
 
 
@@ -155,6 +159,9 @@ def fetch_all(code: str, timeout: float = 90.0, retries: int = 0,
         except Exception as exc:  # noqa: BLE001
             raise DataError(f"关键数据 {tool} 获取失败：{exc}") from exc
 
+    # 可选数据失败不应拖慢整批：只做一次 3 秒短重试，避免默认 60 秒退避
+    # 让每只股票多等两分钟。缺失的共识 / 评级会记录到报告的数据缺口。
+    optional_client = WestockClient(timeout=timeout, retries=1, retry_wait=3.0)
     optional = [
         ("data_profile", {"code": c}),
         ("data_consensus", {"code": c}),
@@ -162,7 +169,7 @@ def fetch_all(code: str, timeout: float = 90.0, retries: int = 0,
     ]
     for tool, params in optional:
         try:
-            calls.append(_call(client, tool, params))
+            calls.append(_call(optional_client, tool, params))
         except Exception as exc:  # noqa: BLE001
             errors.append({"tool": tool, "error": str(exc)})
 

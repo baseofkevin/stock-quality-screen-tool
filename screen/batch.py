@@ -10,6 +10,7 @@ import codecs
 import csv
 import io
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,8 @@ from screen.summary import ScoreSummary
 
 SCORE_COLUMN = "综合评分"
 LINK_COLUMN = "HTML报告链接"
+EASTMONEY_COLUMN = "东方财富网股票详情"
+EASTMONEY_LINK_TEXT = "东方财富网股票详情"
 
 # 兼容常见导出表头；比较时忽略大小写、空格和 BOM。
 CODE_COLUMN_CANDIDATES = {
@@ -142,7 +145,7 @@ def read_csv_table(path: str | Path) -> CsvTable:
 
 def ensure_result_columns(table: CsvTable) -> None:
     """在表头末尾补上结果列；重复运行时复用已有列。"""
-    for name in (SCORE_COLUMN, LINK_COLUMN):
+    for name in (SCORE_COLUMN, LINK_COLUMN, EASTMONEY_COLUMN):
         if name not in table.fieldnames:
             table.fieldnames.append(name)
         for row in table.rows:
@@ -177,6 +180,54 @@ def write_csv_table(table: CsvTable) -> None:
                 pass
 
 
+_HYPERLINK_RE = re.compile(r'^=HYPERLINK\(\s*"([^"]+)"', re.I)
+
+
+def eastmoney_url(raw_code: str) -> str:
+    """把 sh600519 / 600519 / sz300059 转成东方财富个股页。"""
+    code = str(raw_code or "").strip().lower()
+    if len(code) == 8 and code[:2] in {"sh", "sz", "bj"} and code[2:].isdigit():
+        market, digits = code[:2], code[2:]
+    elif len(code) == 6 and code.isdigit():
+        digits = code
+        if digits.startswith("920"):
+            market = "bj"
+        elif digits.startswith(("6", "9")):
+            market = "sh"
+        elif digits.startswith(("4", "8")):
+            market = "bj"
+        else:
+            market = "sz"
+    else:
+        return ""
+    if market == "bj":
+        return f"https://quote.eastmoney.com/bj/{digits}.html#fullScreenChart"
+    return f"https://quote.eastmoney.com/{market}{digits}.html#fullScreenChart"
+
+
+def eastmoney_link_cell(raw_code: str) -> str:
+    url = eastmoney_url(raw_code)
+    if not url:
+        return ""
+    return f'=HYPERLINK("{url}","{EASTMONEY_LINK_TEXT}")'
+
+
 def report_uri(path: str | Path) -> str:
-    """绝对 file:/// 链接，可直接在 Excel / LibreOffice 中点击。"""
+    """绝对 file:/// 链接（中文按 URL 规范编码）。"""
     return Path(path).resolve().as_uri()
+
+
+def report_link_cell(path: str | Path) -> str:
+    """写成 Excel / LibreOffice / WPS 都能点击的 HYPERLINK 公式。
+
+    CSV 导入时普通 URL 文本不会自动变成超链接；HYPERLINK 公式会被
+    表格软件求值，显示为可点击的「打开报告」。
+    """
+    return f'=HYPERLINK("{report_uri(path)}","打开报告")'
+
+
+def link_target(cell: str) -> str:
+    """从 HYPERLINK 公式或普通文本中取出真正的 URL / 路径。"""
+    text = (cell or "").strip()
+    match = _HYPERLINK_RE.match(text)
+    return match.group(1) if match else text

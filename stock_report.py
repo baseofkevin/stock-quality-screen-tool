@@ -28,21 +28,26 @@ sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
 from screen.batch import (  # noqa: E402
+    EASTMONEY_COLUMN,
     LINK_COLUMN,
     SCORE_COLUMN,
     CsvError,
     ReportResult,
+    eastmoney_link_cell,
     ensure_result_columns,
+    link_target,
     read_csv_table,
-    report_uri,
+    report_link_cell,
     write_csv_table,
 )
 from screen.compute import build_report_data  # noqa: E402
 from screen.fetch import DataError, fetch_all, load_bundle, normalize_code  # noqa: E402
+from screen.index_html import write_index_html  # noqa: E402
 from screen.render import render_html  # noqa: E402
 from screen.score import compute_scores  # noqa: E402
 from screen.summary import SummaryError, extract_score_summary  # noqa: E402
 from screen.validate import ScreenError, validate  # noqa: E402
+from screen.xlsx import write_report_xlsx  # noqa: E402
 
 
 def _safe_name(value: str) -> str:
@@ -66,7 +71,7 @@ def _write_atomic(path: Path, text: str) -> None:
 
 def _link_path(link: str) -> Path | None:
     """把 CSV 里的 file:/// 链接还原成本地路径。"""
-    link = (link or "").strip()
+    link = link_target(link)
     if not link:
         return None
     if link.startswith("file://"):
@@ -239,10 +244,10 @@ def _apply_result(table, indices: list[int], result: ReportResult) -> None:
             row[LINK_COLUMN] = ""
         elif result.summary is None:
             row[SCORE_COLUMN] = "评分提取失败"
-            row[LINK_COLUMN] = report_uri(result.target) if result.target else ""
+            row[LINK_COLUMN] = report_link_cell(result.target) if result.target else ""
         else:
             row[SCORE_COLUMN] = result.summary.conclusion
-            row[LINK_COLUMN] = report_uri(result.target) if result.target else ""
+            row[LINK_COLUMN] = report_link_cell(result.target) if result.target else ""
 
 
 def _run_batch(args: argparse.Namespace) -> int:
@@ -278,6 +283,7 @@ def _run_batch(args: argparse.Namespace) -> int:
             row_errors[index] = str(exc)
             continue
         row_codes[index] = code
+        table.rows[index][EASTMONEY_COLUMN] = eastmoney_link_cell(code)
         if code not in seen:
             seen.add(code)
             unique_codes.append(code)
@@ -307,7 +313,7 @@ def _run_batch(args: argparse.Namespace) -> int:
         if existing is not None and summary is not None:
             for index in indices:
                 table.rows[index][SCORE_COLUMN] = summary.conclusion
-                table.rows[index][LINK_COLUMN] = report_uri(existing)
+                table.rows[index][LINK_COLUMN] = report_link_cell(existing)
             reused_codes += 1
             reused_rows += len(indices)
         else:
@@ -319,6 +325,7 @@ def _run_batch(args: argparse.Namespace) -> int:
     for index, error in row_errors.items():
         table.rows[index][SCORE_COLUMN] = "代码无效" if "应为" in error else error
         table.rows[index][LINK_COLUMN] = ""
+        table.rows[index][EASTMONEY_COLUMN] = ""
 
     write_ok = _save_csv(table)
     if not args.quiet:
@@ -376,6 +383,11 @@ def _run_batch(args: argparse.Namespace) -> int:
                 future.cancel()
             pool.shutdown(wait=False, cancel_futures=True)
             write_ok = _save_csv(table) and write_ok
+            try:
+                write_index_html(table, out_dir)
+                write_report_xlsx(table)
+            except Exception:
+                pass
             print("\n已中断：本次已完成的报告和 CSV 进度已保存；"
                   "重新运行会跳过已有报告。", file=sys.stderr)
             sys.stdout.flush()
@@ -398,6 +410,13 @@ def _run_batch(args: argparse.Namespace) -> int:
         print("错误：CSV 回写失败；HTML 报告已保留，修复后可重新运行。", file=sys.stderr)
         return 2
 
+    nav_paths: list[Path] = []
+    try:
+        nav_paths.append(write_index_html(table, out_dir))
+        nav_paths.append(write_report_xlsx(table))
+    except Exception as exc:  # noqa: BLE001
+        print(f"警告：导航文件生成失败（CSV 和 HTML 不受影响）：{exc}", file=sys.stderr)
+
     if not args.quiet:
         print(f"\n批量完成：成功 {ok} 行（复用 {reused_rows} 行），失败 {failed} 行，"
               f"共 {len(table.rows)} 行；股票 {len(unique_codes)} 只")
@@ -405,7 +424,10 @@ def _run_batch(args: argparse.Namespace) -> int:
             print(f"  本次生成 {done_count}/{len(pending_codes)} 只")
         print(f"  CSV      {table.path}")
         print(f"  报告目录 {out_dir}")
-        print(f"  新增列   {SCORE_COLUMN} / {LINK_COLUMN}")
+        print(f"  新增列   {SCORE_COLUMN} / {LINK_COLUMN} / {EASTMONEY_COLUMN}")
+        for nav in nav_paths:
+            label = "导航页  " if nav.suffix.lower() == ".html" else "Excel   "
+            print(f"  {label} {nav}")
     return 0 if failed == 0 else 1
 
 

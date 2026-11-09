@@ -319,6 +319,12 @@ async function main() {
       jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name, arguments: args },
     });
     const text = toolText(r);
+    if (!text.trim()) {
+      // 限频时 MCP 可能返回空 content（而不是错误文本）。明确报出来，
+      // 避免 Python 侧只看到一句“不是 JSON：”后面什么都没有。
+      console.error('[warn] 工具返回空内容（可能限频，或服务端没有该股票数据）');
+      process.exit(3);
+    }
     const parsed = parseToolText(text);
     if (!parsed.isJson) {
       // 工具返回纯文本 = 这次调用没成功（限频 / 参数错 / 工具不存在）。

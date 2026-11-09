@@ -12,6 +12,129 @@
 
 ---
 
+## 2026-11-09 10:10 +08:00
+
+### 修复
+
+- `screen/fetch.py`：可选数据（`data_profile` / `data_consensus` / `data_rating`）
+  改为独立客户端，只做 1 次 3 秒短重试；失败后记录为数据缺口。
+  之前它们和关键数据共用 `--retries 2`、`--retry-wait 60`，限频时每只股票会
+  多等约两分钟，批量看起来像卡住。
+- `providers/westock_client.js`：MCP 返回空 content 时明确报
+  「工具返回空内容（可能限频，或服务端没有该股票数据）」，不再输出空错误信息。
+- `README.md`：补充可选数据短重试说明。
+
+### 修改
+
+- `config.py`：`VERSION` 由 `0.7.5` 升至 `0.7.6`。
+- `METHODOLOGY.md`：版本号同步为 `0.7.6`。
+
+### 影响
+
+- `data_consensus` 限频时不会再阻塞整批 60~120 秒；报告会标注该数据缺口。
+- 关键数据（财务、行情）仍按 `--retries` / `--retry-wait` 重试。
+
+---
+
+## 2026-11-09 10:05 +08:00
+
+### 修复
+
+- `screen/fetch.py`：重试等待前打印 `[warn] ... 秒后重试（1/2）`，
+  避免批量时看起来“卡住不动”。之前默认重试 2 次、每次等待 60 秒，
+  期间终端没有任何输出，容易被误认为进程死掉。
+- `README.md`：补充重试提示说明。
+
+### 修改
+
+- `config.py`：`VERSION` 由 `0.7.4` 升至 `0.7.5`。
+- `METHODOLOGY.md`：版本号同步为 `0.7.5`。
+
+### 影响
+
+- 批量遇到限频 / 超时 / 非 JSON 时，会明确显示还要等多久，不再静默。
+- 实际重试节奏和默认等待时间不变。
+
+---
+
+## 2026-11-09 09:55 +08:00
+
+### 新增
+
+- 批量 CSV 新增 `东方财富网股票详情` 列：
+  - 沪深股票：`https://quote.eastmoney.com/{sh|sz}{代码}.html#fullScreenChart`；
+  - 北交所股票：`https://quote.eastmoney.com/bj/{代码}.html#fullScreenChart`；
+  - CSV 单元格使用 `=HYPERLINK("...","东方财富网股票详情")`。
+- `screen/xlsx.py`：XLSX 新增同名超链接列，显示为「东方财富网股票详情」按钮。
+- `screen/index_html.py`：导航页新增「东方财富网股票详情」按钮。
+- `screen/batch.py`：新增 `eastmoney_url()`、`eastmoney_link_cell()`。
+- `tests/test_smoke.py`：新增沪深 / 北交所 URL 映射、CSV/XLSX/导航页链接测试。
+
+### 修改
+
+- `config.py`：`VERSION` 由 `0.7.3` 升至 `0.7.4`。
+- `METHODOLOGY.md`：版本号同步为 `0.7.4`。
+- `README.md`：补充东方财富网详情列说明。
+
+### 影响
+
+- 现有 CSV 重新运行批量后会多出 `东方财富网股票详情` 列；旧报告全部复用，不重新抓数。
+- XLSX 和 `index.html` 同步增加东方财富网链接。
+
+---
+
+## 2026-11-09 09:50 +08:00
+
+### 新增
+
+- `screen/xlsx.py`：批量结束后生成与 CSV 同名的 `.xlsx`，保留全部列；
+  `HTML报告链接` 列显示为「报告链接」按钮，使用真正的单元格超链接，
+  点击直接打开对应 HTML。无需安装 openpyxl，直接写 OOXML。
+- `screen/index_html.py`：在 `--out-dir` 生成 `index.html` 报告导航页，
+  每只股票一个「报告链接」按钮，支持按代码 / 名称 / 结论搜索。
+- `stock_report.py`：批量结束和中断时自动生成 XLSX 与导航页，并打印路径。
+- `tests/test_smoke.py`：新增 XLSX 超链接和 index.html 按钮测试。
+
+### 修改
+
+- `config.py`：`VERSION` 由 `0.7.2` 升至 `0.7.3`。
+- `METHODOLOGY.md`：版本号同步为 `0.7.3`。
+- `README.md`：说明 CSV 无法保存超链接属性，推荐使用同名 XLSX 或 `index.html`。
+
+### 影响
+
+- CSV 仍保留公式链接；是否可点取决于表格软件是否计算公式。
+- 同名 XLSX 和 `index.html` 不依赖公式，链接是真正可点击的。
+- 单股票模式不生成 XLSX / 导航页。
+
+---
+
+## 2026-11-09 09:45 +08:00
+
+### 修复
+
+- `screen/batch.py`：CSV 的 `HTML报告链接` 由普通 `file:///...` 文本改为
+  `=HYPERLINK("file:///...","打开报告")` 公式。CSV 导入时普通 URL 文本不会自动
+  变成超链接，公式才能让 Excel / LibreOffice / WPS 显示为可点击的「打开报告」。
+- `screen/batch.py`：新增 `report_link_cell()` 和 `link_target()`；
+  `link_target()` 可从 HYPERLINK 公式或旧版普通 URL 中还原真实链接。
+- `stock_report.py`：批量回写链接改用 `report_link_cell()`；增量续跑扫描已有报告时，
+  改用 `link_target()` 解析 CSV 中的链接，兼容旧版 CSV。
+- `tests/test_smoke.py`：断言链接为 HYPERLINK 公式，并验证公式中的 URL 可还原。
+- `README.md`：更新链接列说明。
+
+### 修改
+
+- `config.py`：`VERSION` 由 `0.7.1` 升至 `0.7.2`。
+- `METHODOLOGY.md`：版本号同步为 `0.7.2`。
+
+### 影响
+
+- 重新运行批量命令会把现有 CSV 的链接列更新为可点击公式；HTML 报告和综合评分不变。
+- 旧版普通 `file:///...` 链接仍可被续跑逻辑识别，不会重复生成报告。
+
+---
+
 ## 2026-11-09 08:31 +08:00
 
 ### 新增

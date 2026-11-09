@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import unquote, urlparse
@@ -14,14 +15,18 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import stock_report  # noqa: E402
-from screen.batch import (LINK_COLUMN, SCORE_COLUMN, ensure_result_columns,
-                          read_csv_table, report_uri, write_csv_table)  # noqa: E402
+from screen.batch import (EASTMONEY_COLUMN, LINK_COLUMN, SCORE_COLUMN,
+                          eastmoney_link_cell, eastmoney_url,
+                          ensure_result_columns, link_target, read_csv_table,
+                          report_link_cell, write_csv_table)  # noqa: E402
 from screen.fetch import DataError, load_bundle, normalize_code  # noqa: E402
+from screen.index_html import write_index_html  # noqa: E402
 from screen.compute import (_cash_valuation, _margin_trend, _valuation_chart,
                             build_report_data)  # noqa: E402
 from screen.render import _margin_chart, _section_valuation, render_html  # noqa: E402
 from screen.score import _data_quality, _decision, _valuation_score, compute_scores  # noqa: E402
 from screen.summary import SummaryError, extract_score_summary  # noqa: E402
+from screen.xlsx import write_report_xlsx  # noqa: E402
 from providers.eastmoney import to_secucode  # noqa: E402
 
 FIXTURE = ROOT / "tests" / "fixtures" / "mini_bundle.json"
@@ -367,7 +372,7 @@ class CsvBatchTest(unittest.TestCase):
             table = read_csv_table(path)
             ensure_result_columns(table)
             table.rows[0][SCORE_COLUMN] = "可买"
-            table.rows[0][LINK_COLUMN] = report_uri(Path(td) / "报告.html")
+            table.rows[0][LINK_COLUMN] = report_link_cell(Path(td) / "报告.html")
             write_csv_table(table)
 
             self.assertTrue(path.read_bytes().startswith(b"\xef\xbb\xbf"))
@@ -376,7 +381,8 @@ class CsvBatchTest(unittest.TestCase):
             self.assertEqual(rows[0]["名称"], "贵州茅台")
             self.assertEqual(rows[0]["备注"], "保留")
             self.assertEqual(rows[0][SCORE_COLUMN], "可买")
-            self.assertTrue(rows[0][LINK_COLUMN].startswith("file:///"))
+            self.assertTrue(rows[0][LINK_COLUMN].startswith('=HYPERLINK("file:///'))
+            self.assertTrue(link_target(rows[0][LINK_COLUMN]).startswith("file:///"))
 
     def test_batch_cli_fills_score_and_link(self):
         raw = load_bundle(FIXTURE)
@@ -399,11 +405,15 @@ class CsvBatchTest(unittest.TestCase):
             rows = self._read_csv(csv_path)
             self.assertEqual(rows[0][SCORE_COLUMN], expected)
             link = rows[0][LINK_COLUMN]
-            self.assertTrue(link.startswith("file:///"))
-            report_path = Path(unquote(urlparse(link).path))
+            self.assertTrue(link.startswith('=HYPERLINK("file:///'))
+            report_path = Path(unquote(urlparse(link_target(link)).path))
             self.assertTrue(report_path.exists())
             self.assertRegex(report_path.name,
                              r"^贵州茅台-sh600519-企业质量初筛-\d{8}-\d{6}\.html$")
+            eastmoney = rows[0][EASTMONEY_COLUMN]
+            self.assertIn("东方财富网股票详情", eastmoney)
+            self.assertEqual(link_target(eastmoney),
+                             "https://quote.eastmoney.com/sh600519.html#fullScreenChart")
 
     def test_second_run_reuses_existing_html_without_fetching(self):
         raw = load_bundle(FIXTURE)
@@ -429,9 +439,9 @@ class CsvBatchTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             rows = self._read_csv(csv_path)
             self.assertEqual(rows[0][SCORE_COLUMN], expected)
-            report_path = Path(unquote(urlparse(rows[0][LINK_COLUMN]).path))
+            report_path = Path(unquote(urlparse(link_target(rows[0][LINK_COLUMN])).path))
             self.assertEqual(report_path, existing)
-            self.assertEqual(len(list(out_dir.glob("*.html"))), 1)
+            self.assertEqual(len(list(out_dir.glob("*-企业质量初筛-*.html"))), 1)
 
     def test_force_regenerates_existing_report(self):
         raw = load_bundle(FIXTURE)
@@ -458,9 +468,9 @@ class CsvBatchTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(calls["n"], 1)
             rows = self._read_csv(csv_path)
-            report_path = Path(unquote(urlparse(rows[0][LINK_COLUMN]).path))
+            report_path = Path(unquote(urlparse(link_target(rows[0][LINK_COLUMN])).path))
             self.assertNotEqual(report_path, existing)
-            self.assertEqual(len(list(out_dir.glob("*.html"))), 2)
+            self.assertEqual(len(list(out_dir.glob("*-企业质量初筛-*.html"))), 2)
 
     def test_batch_continues_after_one_failure(self):
         def fake_fetch(code, timeout=90.0, **kwargs):
@@ -482,9 +492,57 @@ class CsvBatchTest(unittest.TestCase):
             expected = compute_scores(build_report_data(raw["calls"], raw["code"]))["decision"]["label"]
             rows = self._read_csv(csv_path)
             self.assertEqual(rows[0][SCORE_COLUMN], expected)
-            self.assertTrue(rows[0][LINK_COLUMN].startswith("file:///"))
+            self.assertTrue(rows[0][LINK_COLUMN].startswith('=HYPERLINK("file:///'))
             self.assertEqual(rows[1][SCORE_COLUMN], "生成失败")
             self.assertEqual(rows[1][LINK_COLUMN], "")
+
+
+class EastmoneyUrlTest(unittest.TestCase):
+    def test_market_prefix_and_plain_codes(self):
+        expected = "https://quote.eastmoney.com/sz300059.html#fullScreenChart"
+        self.assertEqual(eastmoney_url("sz300059"), expected)
+        self.assertEqual(eastmoney_url("300059"), expected)
+        self.assertEqual(eastmoney_url("600519"),
+                         "https://quote.eastmoney.com/sh600519.html#fullScreenChart")
+        self.assertEqual(eastmoney_url("920001"),
+                         "https://quote.eastmoney.com/bj/920001.html#fullScreenChart")
+        self.assertEqual(eastmoney_url("bad"), "")
+
+
+class NavigationOutputTest(unittest.TestCase):
+    def test_xlsx_and_index_contain_clickable_report_links(self):
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            csv_path = td_path / "rows.csv"
+            out_dir = td_path / "reports"
+            out_dir.mkdir()
+            report = out_dir / "贵州茅台-sh600519-企业质量初筛-20260101-000000.html"
+            report.write_text("<html>ok</html>", encoding="utf-8")
+            csv_path.write_bytes("\ufeff代码,名称\r\n600519,贵州茅台\r\n".encode())
+            table = read_csv_table(csv_path)
+            ensure_result_columns(table)
+            table.rows[0][SCORE_COLUMN] = "可买"
+            table.rows[0][LINK_COLUMN] = report_link_cell(report)
+            table.rows[0][EASTMONEY_COLUMN] = eastmoney_link_cell("600519")
+            write_csv_table(table)
+
+            xlsx = write_report_xlsx(table)
+            with zipfile.ZipFile(xlsx) as zf:
+                sheet = zf.read("xl/worksheets/sheet1.xml").decode("utf-8")
+                rels = zf.read("xl/worksheets/_rels/sheet1.xml.rels").decode("utf-8")
+            self.assertIn("报告链接", sheet)
+            self.assertIn("东方财富网股票详情", sheet)
+            self.assertIn("hyperlink", sheet)
+            self.assertIn("file:///", rels)
+            self.assertIn("https://quote.eastmoney.com/sh600519.html#fullScreenChart", rels)
+
+            index = write_index_html(table, out_dir)
+            text = index.read_text(encoding="utf-8")
+            self.assertIn("报告链接", text)
+            self.assertIn("东方财富网股票详情", text)
+            self.assertIn("https://quote.eastmoney.com/sh600519.html#fullScreenChart", text)
+            self.assertIn('class="btn"', text)
+            self.assertIn("贵州茅台", text)
 
 
 if __name__ == "__main__":
