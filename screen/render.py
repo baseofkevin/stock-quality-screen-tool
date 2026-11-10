@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -278,6 +279,77 @@ def _margin_chart(trend: dict[str, Any], improve: dict[str, Any] | None = None) 
     )
 
 
+def _val_band(value: float) -> tuple[str, str]:
+    """分位数值 → (档名, 结论词)。越界按最近的一端处理（-1 → 底部，101 → 顶部）。"""
+    value = min(max(float(value), 0.0), 100.0)
+    for low, high, name, verdict in config.VAL_BANDS:
+        if low <= value < high:
+            return name, verdict
+    return config.VAL_BANDS[-1][2], config.VAL_BANDS[-1][3]
+
+
+# PE/PB/PS 在日常语言里对应「哪一端便宜」，分歧句只在这三个词里挑，不枚举组合。
+VAL_SIDE = {"PE": "利润端", "PB": "净资产端", "PS": "收入端"}
+VAL_KEYS = (("pe", "PE"), ("pb", "PB"), ("ps", "PS"))
+
+
+def _val_items(metrics: dict[str, Any]) -> list[dict[str, Any]]:
+    """把 metrics 里的分位整理成列表（保持 PE/PB/PS 表格顺序）；缺分位的跳过。"""
+    items = []
+    for key, name in VAL_KEYS:
+        raw = ((metrics or {}).get(key) or {}).get("percentile")
+        if raw is None:
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        # 分位只可能是 0~100；NaN 与越界都当缺失处理，不猜也不夹取——
+        # 夹取会把 -5% 读成「历史底部」，比直接跳过更误导。
+        if not 0.0 <= value <= 100.0:
+            continue
+        band, verdict = _val_band(value)
+        items.append({"name": name, "value": value, "band": band, "verdict": verdict})
+    return items
+
+
+def _valuation_position(metrics: dict[str, Any]) -> str:
+    """那一段话的前半句：每个指标的分位 + 档名（一眼看出谁贴着历史上下沿）。"""
+    return "、".join(
+        f"{x['name']} <b>{x['value']:.0f}%</b>（{x['band']}）" for x in _val_items(metrics)
+    )
+
+
+def _valuation_verdict(metrics: dict[str, Any]) -> str:
+    """把分位表读成一句结论。
+
+    规则（METHODOLOGY.md §5「仅展示、不进入 V 的估值指标」）：
+    - 档位取三个分位的**中位数**，不用平均——平均会被单个极端值拽走；
+    - 跨度（最高 − 最低）≤ VAL_SPREAD_TOL 时只说一句结论；
+    - 跨度更大时点名最低/最高的两个指标，并说明「哪一端更便宜」。
+    不足两个指标时返回空串（一个数谈不上位置，也谈不上分歧）。
+    """
+    items = sorted(_val_items(metrics), key=lambda x: x["value"])
+    if len(items) < 2:
+        return ""
+    low, high = items[0], items[-1]
+    # 奇数个取正中间；两个指标时取较高的一侧定性（偏保守）
+    med = items[len(items) // 2] if len(items) % 2 else items[-1]
+    mid = statistics.median([x["value"] for x in items])
+    spread = high["value"] - low["value"]
+    count = "三个口径" if len(items) == 3 else "两个口径"
+
+    if spread <= config.VAL_SPREAD_TOL:
+        return (f"{count}位置接近（跨度 {spread:.0f}pp），中位落在{med['band']}："
+                f"<b>估值{med['verdict']}</b>。")
+    relation = "明显比" if spread >= config.VAL_SPREAD_STRONG else "比"
+    return (f"{count}拉得比较开（{low['name']} {low['value']:.0f}% 在{low['band']}、"
+            f"{high['name']} {high['value']:.0f}% 在{high['band']}，"
+            f"跨度 {spread:.0f}pp）：按中位 {mid:.0f}% 算"
+            f"<b>估值{med['verdict']}</b>，但{VAL_SIDE[low['name']]}{relation}"
+            f"{VAL_SIDE[high['name']]}便宜，位置本身给不出统一结论。")
+
+
 def _valuation_charts(chart: dict[str, Any]) -> str:
     points = chart.get("points") or []
     if not points:
@@ -510,6 +582,13 @@ def _section_valuation(data: dict[str, Any]) -> str:
     if start_year.isdigit():
         since_note = f"{start_year} 年以来周频"
     valuation_charts = _valuation_charts(val.get("chart") or {})
+    # 分位表只给数字，读者仍要自己判断「18% 算便宜吗」——这里把它读成一句话。
+    # 位置来自表里同一列（同一个 percentile 字段），不再重算，避免出现两套数字。
+    position = _valuation_position(metrics)
+    verdict = _valuation_verdict(metrics)
+    verdict_html = ""
+    if position and verdict:
+        verdict_html = (f'<p class="small"><b>估值位置</b>：{position}　——　{verdict}</p>')
 
     fc = data.get("forecast") or {}
     frows = []
@@ -625,13 +704,14 @@ def _section_valuation(data: dict[str, Any]) -> str:
      下图最后一个点、机构目标价空间、现金底线里的市值，用的是同一个收盘价。
      上表为 {since_note}分位；下图为近 {config.VALUATION_YEARS} 年周频走势
      （可用历史不足 {config.VALUATION_YEARS} 年时按全部可用历史），PE 为负时断线。
-     历史分位与走势图只展示，不进入 V 分。</p>
+     历史分位、走势图与下方那句位置判断都只展示，不进入 V 分。</p>
   <table>
     <thead><tr><th>指标</th><th>最新收盘</th><th>历史分位</th><th>区间</th><th>样本点数</th></tr></thead>
     <tbody>{''.join(mrows) or '<tr><td colspan="5">暂无历史估值数据</td></tr>'}</tbody>
   </table>
 
   {valuation_charts}
+  {verdict_html}
 
   <h3>机构对企业未来盈利的预期</h3>
   <p class="small">{esc(coverage_note)}。预测净利与营收单位为亿元；预测不是事实。</p>

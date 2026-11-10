@@ -83,6 +83,8 @@ class OfflineReportTest(unittest.TestCase):
                             "四、综合评分", "五、后续跟踪"]:
                 self.assertIn(heading, html)
             self.assertIn("PE/PB/PS 历史分位及走势图", html)
+            self.assertIn("估值位置", html)          # 0.9.3：分位表读成一句话
+            self.assertIn("中位落在", html)
             self.assertIn("机构对企业未来盈利的预期", html)
             self.assertIn("产品/业务结构", html)
             self.assertIn("茅台酒", html)

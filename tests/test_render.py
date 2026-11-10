@@ -11,7 +11,8 @@ import support
 from screen.render import (_bar, _line_chart, _margin_chart, _score_class, n,
                            _section_business, _section_risks,
                            _section_score, _section_tracking,
-                           _section_valuation, _valuation_charts, esc,
+                           _section_valuation, _val_band, _valuation_charts,
+                           _valuation_position, _valuation_verdict, esc,
                            render_html)
 
 
@@ -251,6 +252,146 @@ class SectionValuationTest(unittest.TestCase):
                                     "end": "2024-01-05", "years": 10,
                                     "span_years": 0.0, "limited": False, "latest": {}})
         self.assertIn(f"近 {config.VALUATION_YEARS} 年 PE(TTM) 周频走势", charts)
+
+
+class ValuationVerdictTest(unittest.TestCase):
+    """第三节「估值位置」那段话：七档边界、中位数定档、跨度分歧。"""
+
+    def _metrics(self, pe, pb, ps):
+        return {"pe": {"percentile": pe}, "pb": {"percentile": pb}, "ps": {"percentile": ps}}
+
+    def test_band_boundaries_do_not_overlap(self):
+        """切点两侧不能串档：这是七档方案唯一的硬规则。"""
+        cases = [(0.0, "历史底部"), (9.9, "历史底部"), (10.0, "下三分之一"),
+                 (29.9, "下三分之一"), (30.0, "中偏低"), (44.9, "中偏低"),
+                 (45.0, "正中"), (54.9, "正中"), (55.0, "中偏高"), (69.9, "中偏高"),
+                 (70.0, "上三分之一"), (89.9, "上三分之一"), (90.0, "历史顶部"),
+                 (100.0, "历史顶部")]
+        for value, band in cases:
+            with self.subTest(value=value):
+                self.assertEqual(_val_band(value)[0], band)
+
+    def test_seven_bands_and_monotonic_verdicts(self):
+        self.assertEqual(len(config.VAL_BANDS), 7)
+        self.assertEqual([v for *_, v in config.VAL_BANDS],
+                         ["明显偏便宜", "偏便宜", "略偏便宜", "中性",
+                          "略偏贵", "偏贵", "明显偏贵"])
+
+    def test_bands_tile_the_whole_range(self):
+        """七档必须首尾相接、不留缝不重叠，否则某个分位会找不到档（落到兜底）。"""
+        self.assertEqual(config.VAL_BANDS[0][0], 0.0)
+        self.assertGreaterEqual(config.VAL_BANDS[-1][1], 100.0)
+        for prev, cur in zip(config.VAL_BANDS, config.VAL_BANDS[1:]):
+            with self.subTest(cut=cur[0]):
+                self.assertEqual(prev[1], cur[0])
+
+    def test_band_clamps_out_of_range_ends(self):
+        """越界值要落在最近的一端，不能两头都掉进「历史顶部」。"""
+        self.assertEqual(_val_band(-5.0)[0], "历史底部")
+        self.assertEqual(_val_band(120.0)[0], "历史顶部")
+
+    def test_all_in_bottom_third(self):
+        text = _valuation_verdict(self._metrics(18.2, 5.8, 17.1))
+        self.assertIn("位置接近（跨度 12pp）", text)
+        self.assertIn("中位落在下三分之一", text)
+        self.assertIn("估值偏便宜", text)
+
+    def test_median_not_mean(self):
+        """76 / 92 / 83：平均值会顶到「明显偏贵」，中位数仍是 83 的「偏贵」。"""
+        text = _valuation_verdict(self._metrics(76.4, 92.0, 82.7))
+        self.assertIn("中位落在上三分之一", text)
+        self.assertIn("估值偏贵", text)
+        self.assertNotIn("明显偏贵", text)
+
+    def test_close_positions_do_not_mention_divergence(self):
+        text = _valuation_verdict(self._metrics(25.8, 43.9, 50.2))    # 跨度 24.4pp
+        self.assertIn("位置接近", text)
+        self.assertNotIn("拉得比较开", text)
+        self.assertIn("估值略偏便宜", text)
+
+    def test_wide_spread_names_both_ends(self):
+        text = _valuation_verdict(self._metrics(39.1, 19.7, 49.4))    # 跨度 29.7pp
+        self.assertIn("拉得比较开", text)
+        self.assertIn("PB 20% 在下三分之一", text)
+        self.assertIn("PS 49% 在正中", text)
+        self.assertIn("净资产端比收入端便宜", text)
+        self.assertNotIn("明显比", text)                              # 未到强措辞门槛
+        self.assertIn("估值略偏便宜", text)
+
+    def test_very_wide_spread_uses_stronger_wording(self):
+        text = _valuation_verdict(self._metrics(10.0, 50.0, 88.0))    # 跨度 78pp
+        self.assertIn("利润端明显比收入端便宜", text)
+
+    def test_two_metrics_says_two(self):
+        text = _valuation_verdict({"pe": {"percentile": 20.0},
+                                   "ps": {"percentile": 60.0}})
+        self.assertIn("两个口径", text)
+        self.assertNotIn("三个口径", text)
+
+    def test_single_metric_has_no_verdict(self):
+        self.assertEqual(_valuation_verdict({"pe": {"percentile": 20.0}}), "")
+        self.assertEqual(_valuation_verdict({}), "")
+
+    def test_missing_percentile_is_skipped(self):
+        text = _valuation_verdict({"pe": {"percentile": None},
+                                   "pb": {"percentile": 20.0},
+                                   "ps": {"percentile": 70.0}})
+        self.assertIn("两个口径", text)
+        self.assertNotIn("PE", text)
+
+    def test_out_of_range_percentile_is_skipped(self):
+        """-5% / 120% 是上游数据错误，当缺失处理，不夹取成「历史底部」误导读者。"""
+        text = _valuation_verdict({"pe": {"percentile": 120.0},
+                                   "pb": {"percentile": 20.0},
+                                   "ps": {"percentile": 30.0}})
+        self.assertIn("两个口径", text)
+        self.assertNotIn("PE", text)
+        self.assertEqual(_valuation_position({"pe": {"percentile": -5.0}}), "")
+
+    def test_verdict_never_leaves_a_gap(self):
+        """0~100 步长 10 的全组合都要有结论，且结论词只能是那七个之一。"""
+        allowed = [v for *_, v in config.VAL_BANDS]
+        for pe in range(0, 101, 10):
+            for pb in range(0, 101, 10):
+                for ps in range(0, 101, 10):
+                    text = _valuation_verdict(self._metrics(pe, pb, ps))
+                    with self.subTest(pe=pe, pb=pb, ps=ps):
+                        self.assertTrue(text)
+                        self.assertTrue(any(w in text for w in allowed), text)
+
+    def test_verdict_does_not_mutate_metrics(self):
+        metrics = self._metrics(18.2, 5.8, 17.1)
+        snapshot = {k: dict(v) for k, v in metrics.items()}
+        _valuation_verdict(metrics)
+        _valuation_position(metrics)
+        self.assertEqual(metrics, snapshot)
+
+    def test_position_line_shows_band_per_metric(self):
+        pos = _valuation_position(self._metrics(18.2, 5.8, 17.1))
+        self.assertIn("PE <b>18%</b>（下三分之一）", pos)
+        self.assertIn("PB <b>6%</b>（历史底部）", pos)
+        self.assertIn("PS <b>17%</b>（下三分之一）", pos)
+
+    def test_section_prints_verdict_after_charts(self):
+        section = _section_valuation(support.scored_data())
+        self.assertIn("估值位置</b>：", section)
+        self.assertLess(section.index("数据范围："), section.index("估值位置</b>："))
+
+    def test_section_verdict_reuses_table_percentile(self):
+        """那句话里的百分比必须与分位表同源，不能出现两套数字。"""
+        data = support.scored_data()
+        data["valuation"]["metrics"]["pe"]["percentile"] = 18.2
+        data["valuation"]["metrics"]["pb"]["percentile"] = 5.8
+        data["valuation"]["metrics"]["ps"]["percentile"] = 17.1
+        section = _section_valuation(data)
+        self.assertIn("<td>18.2%</td>", section)
+        self.assertIn("PE <b>18%</b>（下三分之一）", section)
+
+    def test_section_omits_verdict_without_metrics(self):
+        data = support.scored_data()
+        for key in ("pe", "pb", "ps"):
+            data["valuation"]["metrics"].pop(key, None)
+        self.assertNotIn("估值位置", _section_valuation(data))
 
 
 class SectionScoreTest(unittest.TestCase):
