@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
-"""质量分 Q、估值分 V、10 条风险检查、决策矩阵与跟踪清单。"""
+"""质量分 Q、估值分 V、14 条风险检查、决策矩阵与跟踪清单。"""
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import config
-from screen.util import cagr, div, inverse, linear, mean, median, num, stdev
+from screen.util import cagr, clamp, div, inverse, linear, mean, median, num, stdev
 
-STATUS_LABEL = {"hit": "命中", "clear": "通过", "unknown": "数据不足"}
+STATUS_LABEL = {"hit": "命中", "watch": "提示", "clear": "通过", "unknown": "数据不足", "na": "不适用"}
 
 
 def _years(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -48,13 +47,25 @@ def _item(label: str, score: float | None, maximum: float, raw: str) -> dict[str
 
 
 def _quality(data: dict[str, Any]) -> dict[str, Any]:
+    """质量分 Q：五个维度、16 个子项，组内缺失按 0 分。
+
+    0.9.0 的四处口径修正（权重表本身一个字没动）：
+    - A1 毛利率稳定性乘一个「水平」修正，低毛利公司的稳定不值满分；
+    - A2 应计利润取近 3 年中位数，避开单年预收/应付集中结算；
+    - A3 现金组加 FCF/营收（绝对量陪跑），避免只看“为正年数”；
+    - A4 资本回报组加 ROIC 高于 WACC 的年数，ROE 降权到 6。
+    """
     ys = _years(data)
     if len(ys) < 2:
         return {"score": None, "grade": "数据不足", "groups": [], "coverage": 0.0}
 
+    m = config.QUALITY_ITEM_MAX
     roic = median([y.get("roic") for y in ys])
     roe = median([y.get("roe") for y in ys])
     spread = (roic - config.WACC) if roic is not None else None
+    # A4：中位数只说明“典型年份”，看不出持续性；000725 就是 5 年里 1 年达标
+    roic_known = [y["roic"] for y in ys if y.get("roic") is not None]
+    above = sum(1 for v in roic_known if v > config.WACC)
 
     fcf_pairs = [(y.get("fcf"), y.get("net_profit")) for y in ys]
     fcf_known = [p for p in fcf_pairs if p[0] is not None]
@@ -62,6 +73,9 @@ def _quality(data: dict[str, Any]) -> dict[str, Any]:
     fcf_ni = median([div(f, n) for f, n in fcf_pairs if (f is not None and n and n > 0)])
     cfo_ni = median([div(y.get("ocf"), y.get("net_profit")) for y in ys
                      if y.get("net_profit") and y["net_profit"] > 0])
+    # A3：FCF/营收 —— 比值不受规模影响，与护城河「现金创造」同一口径
+    fcf_margin = median([y.get("fcf_margin") for y in ys if y.get("fcf_margin") is not None])
+    fcf_margin_pct = (fcf_margin * 100.0) if fcf_margin is not None else None
 
     latest = _latest(data)
     net_debt = None
@@ -74,46 +88,80 @@ def _quality(data: dict[str, Any]) -> dict[str, Any]:
     goodwill_ratio = div(latest.get("goodwill"), latest.get("equity"))
 
     rev_cagr = cagr(ys[0].get("revenue"), ys[-1].get("revenue"), (ys[-1].get("year") or 0) - (ys[0].get("year") or 0))
-    gm_std = stdev([y.get("gross_margin") for y in ys])
+    gm_list = [y.get("gross_margin") for y in ys if y.get("gross_margin") is not None]
+    gm_med, gm_std = median(gm_list), stdev(gm_list)
+    # A1：σ 只说明稳不稳，不说明高不高；毛利率 5% 的公司 σ 再小也不叫稳定
+    gm_level = None
+    if gm_med is not None:
+        gm_level = clamp((gm_med - config.QUALITY_GM_LEVEL_FLOOR)
+                         / (config.QUALITY_GM_LEVEL_FULL - config.QUALITY_GM_LEVEL_FLOOR), 0.0, 1.0)
+    gm_stability = None
+    if gm_level is not None and gm_std is not None:      # 只有 1 年毛利率时 σ 为空，不能乘 None
+        gm_stability = inverse(gm_std, 0, 5, m["durability"]["gm_stability"]) * gm_level
     roe_std = stdev([y.get("roe") for y in ys])
     # 与风险检查一致：用最近 3 年，避免 IPO 当年一次性扩张拉高稀释率
     dilution_base = ys[-4] if len(ys) >= 4 else ys[0]
     dilution = cagr(dilution_base.get("shares"), ys[-1].get("shares"),
                     (ys[-1].get("year") or 0) - (dilution_base.get("year") or 0))
 
-    accrual = None
-    if latest.get("net_profit") is not None and latest.get("ocf") is not None and latest.get("total_assets"):
-        accrual = (latest["net_profit"] - latest["ocf"]) / latest["total_assets"] * 100.0
+    # A2：应计利润取近 3 年中位数；单年值仍写进 raw，便于和年报对账
+    accrual_series = [
+        (y["net_profit"] - y["ocf"]) / y["total_assets"] * 100.0
+        for y in ys[-config.QUALITY_ACCRUAL_YEARS:]
+        if y.get("net_profit") is not None and y.get("ocf") is not None and y.get("total_assets")
+    ]
+    accrual = median(accrual_series)
+    accrual_one = accrual_series[-1] if accrual_series else None
     deducted_ratio = div(latest.get("deducted"), latest.get("net_profit"))
 
     returns = _group([
-        _item("ROIC−WACC", linear(spread, 0, 15, 20), 20, f"{_p(spread)}"),
-        _item("ROE 中位数", linear(roe, 8, 20, 10), 10, f"{_p(roe)}"),
+        _item("ROIC−WACC", linear(spread, 0, 15, m["returns"]["spread"]), m["returns"]["spread"],
+              f"{_p(spread)}"),
+        _item("ROIC>WACC 年数",
+              (above / len(roic_known) * m["returns"]["above_wacc"]) if roic_known else None,
+              m["returns"]["above_wacc"],
+              f"{above}/{len(roic_known)}" if roic_known else "—"),
+        _item("ROE 中位数", linear(roe, 8, 20, m["returns"]["roe"]), m["returns"]["roe"], f"{_p(roe)}"),
     ], "资本回报", config.QUALITY_WEIGHTS["returns"])
     cash = _group([
-        _item("FCF 为正年数", (positive / len(fcf_known) * 10) if fcf_known else None, 10,
-              f"{positive}/{len(fcf_known)}" if fcf_known else "—"),
-        _item("FCF/净利润", linear(fcf_ni, 0, 1, 8), 8, f"{_n(fcf_ni)}"),
-        _item("CFO/净利润", linear(cfo_ni, 0.7, 1.2, 7), 7, f"{_n(cfo_ni)}"),
+        _item("FCF 为正年数", (positive / len(fcf_known) * m["cash"]["fcf_years"]) if fcf_known else None,
+              m["cash"]["fcf_years"], f"{positive}/{len(fcf_known)}" if fcf_known else "—"),
+        _item("FCF/净利润", linear(fcf_ni, 0, 1, m["cash"]["fcf_ni"]), m["cash"]["fcf_ni"],
+              f"{_n(fcf_ni)}"),
+        _item("CFO/净利润", linear(cfo_ni, 0.7, 1.2, m["cash"]["cfo_ni"]), m["cash"]["cfo_ni"],
+              f"{_n(cfo_ni)}"),
+        _item("FCF/营收", linear(fcf_margin_pct, 0, 15, m["cash"]["fcf_margin"]),
+              m["cash"]["fcf_margin"], f"{_p(fcf_margin_pct)}"),
     ], "现金创造力", config.QUALITY_WEIGHTS["cash"])
     balance = _group([
-        _item("净负债/EBIT", inverse(net_debt_ebit, 0, 3, 8) if net_debt_ebit is not None else None,
-              8, f"{_n(net_debt_ebit)}"),
-        _item("利息保障", linear(interest, 3, 10, 6) if interest is not None else None, 6,
+        _item("净负债/EBIT", inverse(net_debt_ebit, 0, 3, m["balance"]["net_debt_ebit"])
+              if net_debt_ebit is not None else None,
+              m["balance"]["net_debt_ebit"], f"{_n(net_debt_ebit)}"),
+        _item("利息保障", linear(interest, 3, 10, m["balance"]["interest"])
+              if interest is not None else None, m["balance"]["interest"],
               "净利息收入" if interest == 99.0 else f"{_n(interest)}x"),
-        _item("商誉/净资产", inverse(goodwill_ratio * 100 if goodwill_ratio is not None else None, 0, 20, 6),
-              6, f"{_p(goodwill_ratio * 100 if goodwill_ratio is not None else None)}"),
+        _item("商誉/净资产",
+              inverse(goodwill_ratio * 100 if goodwill_ratio is not None else None, 0, 20,
+                      m["balance"]["goodwill"]),
+              m["balance"]["goodwill"], f"{_p(goodwill_ratio * 100 if goodwill_ratio is not None else None)}"),
     ], "资产负债表", config.QUALITY_WEIGHTS["balance"])
     durability = _group([
-        _item("营收 CAGR", linear(rev_cagr, 0, 15, 5), 5, f"{_p(rev_cagr)}"),
-        _item("毛利率稳定性", inverse(gm_std, 0, 5, 4), 4, f"σ {_n(gm_std)}"),
-        _item("ROE 稳定性", inverse(roe_std, 0, 8, 3), 3, f"σ {_n(roe_std)}"),
-        _item("股本稀释", inverse(dilution, 0, 3, 3), 3, f"{_p(dilution)}"),
+        _item("营收 CAGR", linear(rev_cagr, 0, 15, m["durability"]["rev_cagr"]),
+              m["durability"]["rev_cagr"], f"{_p(rev_cagr)}"),
+        _item("毛利率稳定性", gm_stability, m["durability"]["gm_stability"],
+              f"σ {_n(gm_std)}｜中位 {_p(gm_med)}（水平 ×{gm_level:.2f}）" if gm_level is not None
+              else f"σ {_n(gm_std)}"),
+        _item("ROE 稳定性", inverse(roe_std, 0, 8, m["durability"]["roe_stability"]),
+              m["durability"]["roe_stability"], f"σ {_n(roe_std)}"),
+        _item("股本稀释", inverse(dilution, 0, 3, m["durability"]["dilution"]),
+              m["durability"]["dilution"], f"{_p(dilution)}"),
     ], "成长与稳定", config.QUALITY_WEIGHTS["durability"])
     accounting = _group([
-        _item("应计利润", inverse(accrual, 0, 10, 5), 5, f"{_p(accrual)}"),
-        _item("扣非占比", linear(deducted_ratio * 100 if deducted_ratio is not None else None, 70, 100, 5),
-              5, f"{_p(deducted_ratio * 100 if deducted_ratio is not None else None)}"),
+        _item("应计利润", inverse(accrual, 0, 10, m["accounting"]["accrual"]), m["accounting"]["accrual"],
+              f"3 年中位 {_p(accrual)}（单年 {_p(accrual_one)}）"),
+        _item("扣非占比", linear(deducted_ratio * 100 if deducted_ratio is not None else None, 70, 100,
+                                m["accounting"]["deducted"]),
+              m["accounting"]["deducted"], f"{_p(deducted_ratio * 100 if deducted_ratio is not None else None)}"),
     ], "会计质量", config.QUALITY_WEIGHTS["accounting"])
 
     groups = [returns, cash, balance, durability, accounting]
@@ -152,125 +200,638 @@ def _n(v: float | None, digits: int = 2) -> str:
     return "—" if v is None else f"{v:.{digits}f}"
 
 
+def _yi(v: float | None, digits: int = 2) -> str:
+    return "—" if v is None else f"{v / 1e8:,.{digits}f} 亿"
+
+
+def _delta_pct(v: float | None) -> str:
+    """增长率（小数）转成带符号百分比。"""
+    return "—" if v is None else f"{v * 100:+.1f}%"
+
+
+def _growth(now: float | None, before: float | None) -> float | None:
+    if now is None or before is None or before == 0:
+        return None
+    return (now - before) / abs(before)
+
+
+def _ar_total(row: dict[str, Any]) -> float | None:
+    """应收 = 应收账款 + 应收款项融资（票据在部分公司记入后者，茅台即如此）。"""
+    if not row:
+        return None
+    ar, rf = row.get("ar"), row.get("receivable_fin")
+    if ar is None and rf is None:
+        return None
+    return (ar or 0.0) + (rf or 0.0)
+
+
+def _contract_liab(row: dict[str, Any]) -> float | None:
+    """合同负债 + 预收款项（新准则下预收多已并入合同负债，老报表仍有余额）。"""
+    if not row:
+        return None
+    cl, ap = row.get("contract_liability"), row.get("advance_payment")
+    if cl is None and ap is None:
+        return None
+    return (cl or 0.0) + (ap or 0.0)
+
+
+def _expense(row: dict[str, Any]) -> float | None:
+    """期间费用 = 销售费用 + 管理费用 + 研发费用。"""
+    if not row:
+        return None
+    parts = [row.get("sell_expense"), row.get("admin_expense"), row.get("rnd_expense")]
+    if all(p is None for p in parts):
+        return None
+    return sum(p or 0.0 for p in parts)
+
+
+def _quarter_index(d: str) -> int | None:
+    try:
+        year, month = int(d[:4]), int(d[5:7])
+    except (ValueError, TypeError):
+        return None
+    return year * 4 + (month - 1) // 3
+
+
+def _delta(now: float | None, before: float | None) -> float | None:
+    """差（比率型指标给 pct 点差，营收给增速），任一缺失即 None。"""
+    if now is None or before is None:
+        return None
+    return now - before
+
+
+def _change_level(delta: float | None, *, eps: float = config.MARGIN_IMPROVE_EPS,
+                  up: str = "改善", flat: str = "持平", down: str = "走弱") -> str:
+    """把变化量翻成等级：改善 / 持平 / 走弱（营收用 增长 / 持平 / 下滑）。"""
+    if delta is None:
+        return "—"
+    if delta > eps:
+        return up
+    if delta < -eps:
+        return down
+    return flat
+
+
+def _rest_note(rows: list[dict[str, Any]], weak: list[dict[str, Any]]) -> str:
+    """结论句的后半段：其余项是改善/持平。缺数据的那几项统一在结尾补。"""
+    rest = [r for r in rows if r["level"] in ("改善", "增长", "持平")]
+    return f"；其余 {len(rest)} 项改善或持平"
+
+
+def _margin_improve(data: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    """① 毛利率环比改善三条件：环比增、营收环比不降、高于上年同季。
+
+    按「季度序号」取上一季 / 上年同季，不按位置取——接口缺季时，
+    位置相邻的两个点可能相差一整年（年报 + 三季报），环比会算错。
+
+    返回 (状态, 表格用说明, 结构化对比)。对比里给毛利率 / 净利率 / 营业收入
+    各自的同比与环比变化（六个数字），并点名「哪个指标的哪个口径没改善」，
+    供报告在图表下方逐行展开。
+    """
+    points = ((data.get("financials") or {}).get("margin_trend") or {}).get("points") or []
+    usable = [p for p in points if p.get("gross") is not None and p.get("revenue")]
+    if not usable:
+        return "unknown", "无可用单季数据", {}
+    by_index = {_quarter_index(str(p.get("date"))): p for p in usable}
+    cur = usable[-1]
+    ci = _quarter_index(str(cur.get("date")))
+    prev = by_index.get(ci - 1) if ci else None
+    yoy = by_index.get(ci - 4) if ci else None
+    if prev is None or yoy is None:
+        missing = "、".join(n for n, v in (("上一季", prev), ("上年同季", yoy)) if v is None)
+        return "unknown", f"季报不连续（缺{missing}），无法做环比/同比判定", {}
+
+    eps = config.MARGIN_IMPROVE_EPS
+    c1 = cur["gross"] - prev["gross"] > eps                 # 毛利率环比增
+    c2 = cur["revenue"] >= prev["revenue"]                  # 营收环比不降
+    c3 = cur["gross"] - yoy["gross"] > eps                  # 毛利率高于上年同季
+    met = sum([c1, c2, c3])
+
+    # 六个变化：营收用增速（%），毛利率/净利率用 pct 点差
+    rev_yoy = _growth(cur.get("revenue"), yoy.get("revenue"))
+    rev_qoq = _growth(cur.get("revenue"), prev.get("revenue"))
+    g_yoy, g_qoq = _delta(cur["gross"], yoy.get("gross")), _delta(cur["gross"], prev.get("gross"))
+    n_yoy, n_qoq = _delta(cur.get("net"), yoy.get("net")), _delta(cur.get("net"), prev.get("net"))
+    specs = [
+        ("营业收入", "同比", rev_yoy, "rev"),
+        ("毛利率", "同比", g_yoy, "pp"),
+        ("净利率", "同比", n_yoy, "pp"),
+        ("营业收入", "环比", rev_qoq, "rev"),
+        ("毛利率", "环比", g_qoq, "pp"),
+        ("净利率", "环比", n_qoq, "pp"),
+    ]
+    rows = []
+    for metric, basis, delta, unit in specs:
+        if unit == "rev":
+            level = _change_level(delta, eps=0.001, up="增长", down="下滑")
+            text = "—" if delta is None else f"{delta * 100:+.1f}%"
+        else:
+            level = _change_level(delta)
+            text = "—" if delta is None else f"{delta:+.2f}pct"
+        rows.append({"metric": metric, "basis": basis, "delta": delta,
+                     "unit": unit, "level": level, "text": text})
+    by_key = {(r["metric"], r["basis"]): r for r in rows}
+    weak = [r for r in rows if r["level"] in ("走弱", "下滑")]
+    # 按指标分组（毛利率 → 营业收入 → 净利率），组内同比在前：读者是顺着指标看的
+    _metric_order = {"毛利率": 0, "营业收入": 1, "净利率": 2}
+    _basis_order = {"同比": 0, "环比": 1}
+    weak.sort(key=lambda r: (_metric_order.get(r["metric"], 9), _basis_order.get(r["basis"], 9)))
+    cond_fail = [n for n, ok in (("C1", c1), ("C2", c2), ("C3", c3)) if not ok]
+
+    def _point(point: dict[str, Any], key: str, digits: int = 2) -> str:
+        v = point.get(key)
+        return "—" if v is None else f"{v:.{digits}f}%"
+
+    cur_label, prev_label, yoy_label = (cur.get("label"), prev.get("label"), yoy.get("label"))
+    yoy_line = (f"同比（{cur_label} vs {yoy_label}）："
+                f"营业收入 {_yi(cur.get('revenue'))}（{by_key[('营业收入', '同比')]['text']}，"
+                f"上年同季 {_yi(yoy.get('revenue'))}）"
+                f"｜毛利率 {_point(cur, 'gross')}（{by_key[('毛利率', '同比')]['text']}，"
+                f"上年同季 {_point(yoy, 'gross')}）"
+                f"｜净利率（归母） {_point(cur, 'net')}（{by_key[('净利率', '同比')]['text']}，"
+                f"上年同季 {_point(yoy, 'net')}）")
+    qoq_line = (f"环比（{cur_label} vs {prev_label}）："
+                f"营业收入 {_yi(cur.get('revenue'))}（{by_key[('营业收入', '环比')]['text']}，"
+                f"上一季 {_yi(prev.get('revenue'))}）"
+                f"｜毛利率 {_point(cur, 'gross')}（{by_key[('毛利率', '环比')]['text']}，"
+                f"上一季 {_point(prev, 'gross')}）"
+                f"｜净利率（归母） {_point(cur, 'net')}（{by_key[('净利率', '环比')]['text']}，"
+                f"上一季 {_point(prev, 'net')}）")
+
+    if met == 3:
+        label = "改善（C1/C2/C3 成立）"
+        verdict = "C1/C2/C3 三项条件全部成立：毛利率环比、营业收入环比、毛利率同比都在改善。"
+        if weak:
+            verdict += ("；另需注意 " + "、".join(
+                f"「{r['metric']}{r['basis']}」{r['text']}" for r in weak) + "，不在三条件之内。")
+    elif met == 2:
+        label = f"未改善（{cond_fail[0]} 不成立）"
+        if weak:
+            verdict = ("未改善的是" + "、".join(
+                f"「{r['metric']}{r['basis']}」（{r['text']}）" for r in weak)
+                + _rest_note(rows, weak) + "。")
+        else:
+            verdict = (f"三条件里 {cond_fail[0]} 不成立，但幅度都在容差（±{eps:.2f}pct）内，"
+                       "只能说没有明显改善。")
+    else:
+        label = f"走弱（{'/'.join(cond_fail)} 不成立）"
+        if weak:
+            verdict = ("变差的是" + "、".join(
+                f"「{r['metric']}{r['basis']}」（{r['text']}）" for r in weak)
+                + _rest_note(rows, weak) + "。")
+        else:
+            verdict = "三条件里有两项以上不成立，且没有单项继续改善，毛利率已经走弱。"
+
+    # 缺数据的两项（通常是净利率）不能算进「改善」里，结尾统一交代一句
+    missing = [r for r in rows if r["level"] == "—"]
+    if missing:
+        miss_txt = "、".join(f"{r['metric']}{r['basis']}" for r in missing)
+        verdict = verdict.rstrip("。") + f"；{miss_txt}缺数据未判定。"
+
+    detail = (f"{label}｜同比：毛利率 {by_key[('毛利率', '同比')]['text']}、"
+              f"净利率 {by_key[('净利率', '同比')]['text']}、营收 {by_key[('营业收入', '同比')]['text']}"
+              f"｜环比：毛利率 {by_key[('毛利率', '环比')]['text']}、"
+              f"净利率 {by_key[('净利率', '环比')]['text']}、营收 {by_key[('营业收入', '环比')]['text']}")
+
+    if met == 3:
+        badge = "毛利率同比、环比均改善"
+    elif weak:
+        # 同一指标的同比、环比都没改善时合成一句（「营业收入同比、环比下滑」），别列两遍
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for r in weak:
+            grouped.setdefault(r["metric"], []).append(r)
+        names = []
+        for metric, items in grouped.items():
+            if {i["basis"] for i in items} == {"同比", "环比"}:
+                names.append(f"{metric}同比、环比{items[0]['level']}")
+            else:
+                names.append(f"{metric}{items[0]['basis']}{items[0]['level']}")
+        badge = "；".join(names[:2]) + (f" 等 {len(names)} 项" if len(names) > 2 else "")
+    else:
+        badge = "、".join(f"{n} 不成立" for n in cond_fail) or "未改善"
+
+    status = "clear" if met == 3 else ("watch" if met == 2 else "hit")
+    compare = {
+        "label": label,
+        "badge": badge,
+        "yoy_line": yoy_line,
+        "qoq_line": qoq_line,
+        "verdict": verdict,
+        "rows": rows,
+        "weak": weak,
+        "cond": {"C1": c1, "C2": c2, "C3": c3},
+        "prev_label": prev_label,
+        "yoy_label": yoy_label,
+        "cur_label": cur_label,
+    }
+    return status, detail, compare
+
+
 def _risk_checks(data: dict[str, Any]) -> list[dict[str, Any]]:
     ys = _years(data)
     latest = _latest(data)
     prev = _prev(data)
     checks: list[dict[str, Any]] = []
 
-    def add(key: str, name: str, status: str, detail: str, severity: str = "中") -> None:
-        checks.append({"key": key, "name": name, "status": status, "detail": detail, "severity": severity})
+    def add(key: str, group: str, name: str, status: str, detail: str,
+            severity: str = "中", tag: str | None = None) -> dict[str, Any]:
+        checks.append({"key": key, "group": group, "name": name, "status": status,
+                       "detail": detail, "severity": severity,
+                       "tag": _CHECK_TAGS.get((key, status), "") if tag is None else tag})
+        return checks[-1]
 
-    # 1 CFO/净利润
-    recent = ys[-3:]
-    pairs = [(y.get("ocf"), y.get("net_profit")) for y in recent if y.get("net_profit") and y["net_profit"] > 0 and y.get("ocf") is not None]
-    if len(pairs) < 2:
-        add("cfo_ni", "利润含金量", "unknown", "近 3 年可用数据不足")
+    # ================= 真伪 =================
+    # 1 净现比 TTM 四档 + FCF 负年数（原「利润含金量」与「FCF 持续性」合并）
+    np_ttm = latest.get("np_ttm") or latest.get("net_profit")
+    ocf_ttm = latest.get("ocf_ttm") or latest.get("ocf")
+    cash_ni = div(ocf_ttm, np_ttm) if (np_ttm is not None and np_ttm > 0) else None
+    fcf_known = [y.get("fcf") for y in ys if y.get("fcf") is not None]
+    fcf_neg = sum(1 for v in fcf_known if v <= 0)
+    # 金融股 / 缺现金流量表的样本没有可用 FCF，不能写成“0 年中 0 年为负”这种空话
+    fcf_txt = (f"FCF {len(fcf_known)} 年中 {fcf_neg} 年为负" if fcf_known
+               else "FCF 无可用年度（口径不适用）")
+    if cash_ni is None:
+        add("cash_flow", "真伪", "现金流质量", "unknown",
+            f"归母净利为负或缺失，净现比无法计算；{fcf_txt}", "高")
     else:
-        bad = [f / n for f, n in pairs if f / n < config.CFO_NI_FLOOR]
-        add("cfo_ni", "利润含金量", "hit" if len(bad) >= 2 else "clear",
-            f"近 3 年 {len(bad)} 年 CFO/净利润 < {config.CFO_NI_FLOOR:.1f}", "高")
+        if cash_ni > config.CASH_NI_GOOD:
+            tier = "优秀"
+        elif cash_ni >= config.CASH_NI_OK:
+            tier = "健康"
+        elif cash_ni >= config.CASH_NI_WEAK:
+            tier = "警惕"
+        else:
+            tier = "危险"
+        two = [y for y in ys[-2:]
+               if y.get("net_profit") and y["net_profit"] > 0 and y.get("ocf") is not None]
+        low2 = len(two) == 2 and all(y["ocf"] / y["net_profit"] < config.CASH_NI_TWO_YEAR for y in two)
+        detail = f"净现比(TTM) {_n(cash_ni)}（{tier}）；{fcf_txt}"
+        if low2:
+            detail += "；连续 2 年 < 0.5"
+        if cash_ni < config.CASH_NI_WEAK or low2 or fcf_neg >= config.FCF_NEGATIVE_YEARS:
+            status = "hit"
+        elif cash_ni < config.CASH_NI_OK:
+            status = "watch"
+        else:
+            status = "clear"
+        add("cash_flow", "真伪", "现金流质量", status, detail, "高")
 
-    # 2 FCF 持续性
-    known = [y.get("fcf") for y in ys if y.get("fcf") is not None]
-    if len(known) < 3:
-        add("fcf", "FCF 持续性", "unknown", "FCF 可用年数不足 3 年", "高")
+    # 2 扣非/归母缺口 + 扣非增速缺口 + 期间费用率（原「非经常性利润」，费用率并入）
+    ded_ratio = div(latest.get("deducted"), latest.get("net_profit"))
+    if ded_ratio is None or (latest.get("net_profit") or 0) <= 0:
+        add("nonrecurring", "真伪", "利润口径", "unknown", "扣非净利润缺失或归母为负", "高")
     else:
-        neg = sum(1 for v in known if v <= 0)
-        add("fcf", "FCF 持续性", "hit" if neg >= config.FCF_NEGATIVE_YEARS else "clear",
-            f"{len(known)} 个年度中 {neg} 年为负", "高")
+        ded_g = _growth(latest.get("deducted"), prev.get("deducted"))
+        np_g = _growth(latest.get("net_profit"), prev.get("net_profit"))
+        detail = f"扣非/归母 {_p(ded_ratio * 100)}"
+        if ded_g is not None and np_g is not None:
+            detail += f"；扣非增速 {_delta_pct(ded_g)} vs 归母 {_delta_pct(np_g)}"
+        exp_gap = None
+        if _expense(latest) is not None and _expense(prev) is not None:
+            exp_g = _growth(_expense(latest), _expense(prev))
+            rev_g = _growth(latest.get("revenue"), prev.get("revenue"))
+            if exp_g is not None and rev_g is not None:
+                exp_gap = exp_g - rev_g
+                exp_ratio = div(_expense(latest), latest.get("revenue"))
+                detail += (f"；期间费用率 {_p(exp_ratio * 100)}"
+                           f"（增速差 {exp_gap * 100:+.1f}pct）")
+        if ded_ratio < config.NONRECURRING_RATIO_MIN:
+            status = "hit"
+        elif exp_gap is not None and exp_gap > config.EXPENSE_GROWTH_GAP:
+            status = "watch"
+        else:
+            status = "clear"
+        add("nonrecurring", "真伪", "利润口径", status, detail, "高")
 
-    # 3 杠杆
-    net_debt = (latest.get("debt") - latest.get("cash")) if (latest.get("debt") is not None and latest.get("cash") is not None) else None
+    # ================= 趋势 =================
+    # 3 ① 毛利率环比改善（三条件）+ 毛利率/净利率/营收的同比与环比对照
+    status, detail, compare = _margin_improve(data)
+    add("margin_improve", "趋势", "① 毛利率环比改善", status, detail, "高")["compare"] = compare
+
+    # 4 ② 合同负债/营收（同比 + 占比）
+    cl_now = _contract_liab(latest)
+    cl_prev = _contract_liab(prev)
+    if cl_now is None:
+        add("contract_liability", "趋势", "② 合同负债", "unknown", "合同负债/预收款项字段缺失", "高")
+    else:
+        cl_g = _growth(cl_now, cl_prev)
+        cl_ratio = div(cl_now, latest.get("revenue"))
+        detail = f"合同负债 {_yi(cl_now)}（占营收 {_p((cl_ratio or 0) * 100) if cl_ratio is not None else '—'}，同比 {_delta_pct(cl_g)}）"
+        if cl_g is not None and cl_g >= config.CL_GROWTH_MIN and (cl_ratio or 0) >= config.CL_REV_MIN:
+            status = "clear"
+            detail = "需求扩张；" + detail
+        elif cl_g is not None and cl_g <= -config.CL_GROWTH_MIN:
+            prev2 = ys[-3] if len(ys) >= 3 else {}
+            cl_prev2 = _contract_liab(prev2)
+            g2 = _growth(cl_prev, cl_prev2) if cl_prev is not None else None
+            if g2 is not None and g2 <= -config.CL_GROWTH_MIN:
+                status = "hit"
+                detail = "连续两期下滑；" + detail
+            else:
+                status = "watch"
+                detail = "预收转弱；" + detail
+        else:
+            status = "clear"
+            detail = "平稳；" + detail
+        add("contract_liability", "趋势", "② 合同负债", status, detail, "高")
+
+    # ================= 质量 =================
+    # 5 应收增速差（口径只用应收账款/应收票据：应收款项融资属于票据结算，不是赊销）
+    ar_now = latest.get("ar")
+    ar_ratio = div(ar_now, latest.get("revenue"))
+    ar_pairs = [(ys[i - 1], ys[i]) for i in range(1, len(ys))][-2:]
+    ar_gaps = []
+    for before, now in ar_pairs:
+        ag = _growth(now.get("ar"), before.get("ar"))
+        rg = _growth(now.get("revenue"), before.get("revenue"))
+        ar_gaps.append((ag - rg) if (ag is not None and rg is not None) else None)
+    if ar_ratio is None or ar_ratio < config.AR_BASE_RATIO_MIN:
+        add("ar_gap", "质量", "应收增速差", "unknown",
+            f"应收占营收 {_p(ar_ratio * 100, 3) if ar_ratio is not None else '—'}，基数过小，增速差无意义", "高")
+    else:
+        gaps_txt = "、".join(_delta_pct(g) if g is None else f"{g * 100:+.1f}pct" for g in ar_gaps)
+        detail = f"应收增速差（应收增速−营收增速）近两年 {gaps_txt}；应收占营收 {_p(ar_ratio * 100)}"
+        latest_gap = ar_gaps[-1] if ar_gaps else None
+        both = len(ar_gaps) == 2 and all(g is not None and g > config.AR_REV_GAP_ALERT for g in ar_gaps)
+        if latest_gap is not None and latest_gap > config.AR_REV_GAP_ALERT:
+            if both:
+                status = "hit"
+                detail = "连续两年 > 15pct；" + detail
+            else:
+                # 应收占营收 <2% 时只提示（茅台票据 1.17% 能造出 +2580pct）
+                if ar_ratio < config.AR_MATERIAL_RATIO:
+                    detail = "应收不足营收 2%，仅提示；" + detail
+                status = "watch"
+        else:
+            status = "clear"
+        add("ar_gap", "质量", "应收增速差", status, detail, "高")
+
+    # 6 存货增速差
+    inv_now = latest.get("inventory")
+    inv_ratio = div(inv_now, latest.get("revenue"))
+    if inv_ratio is None or inv_ratio < config.INV_MATERIAL_RATIO:
+        add("inventory_gap", "质量", "存货增速差", "unknown",
+            f"存货占营收 {_p(inv_ratio * 100, 2) if inv_ratio is not None else '—'}，占比过小，增速差不作判定", "中")
+    else:
+        ig = _growth(inv_now, prev.get("inventory"))
+        rg = _growth(latest.get("revenue"), prev.get("revenue"))
+        gap = (ig - rg) if (ig is not None and rg is not None) else None
+        detail = (f"存货 {_delta_pct(ig)} vs 营收 {_delta_pct(rg)}（差 {gap * 100:+.1f}pct）；"
+                  f"存货占营收 {_p(inv_ratio * 100)}" if gap is not None
+                  else f"存货占营收 {_p(inv_ratio * 100)}，增速差无法计算")
+        ig2 = _growth(prev.get("inventory"), ys[-3].get("inventory")) if len(ys) >= 3 else None
+        rg2 = _growth(prev.get("revenue"), ys[-3].get("revenue")) if len(ys) >= 3 else None
+        gap2 = (ig2 - rg2) if (ig2 is not None and rg2 is not None) else None
+        if gap is not None and gap > config.INV_REV_GAP_HIGH:
+            status = "hit"
+        elif (gap is not None and gap > config.INV_REV_GAP_ALERT
+              and gap2 is not None and gap2 > config.INV_REV_GAP_ALERT):
+            status = "hit"
+            detail = "连续两年 > 15pct；" + detail
+        elif gap is not None and gap > config.INV_REV_GAP_ALERT:
+            status = "watch"
+        else:
+            status = "clear"
+        add("inventory_gap", "质量", "存货增速差", status, detail, "中")
+
+    # 7 三流组合（经营 / 投资 / 筹资）
+    ocf, icf, fin_cf = latest.get("ocf"), latest.get("icf"), latest.get("fcf_fin")
+    if ocf is None or icf is None or fin_cf is None:
+        add("cashflow_pattern", "质量", "三流组合", "unknown", "经营/投资/筹资现金流字段不全", "中")
+    else:
+        signs = "".join("+" if v >= 0 else "-" for v in (ocf, icf, fin_cf))
+        detail = f"{signs}（经营 {_yi(ocf)}｜投资 {_yi(icf)}｜筹资 {_yi(fin_cf)}）"
+        if ocf < 0 and fin_cf > 0:
+            status, detail = "hit", "靠输血续命；" + detail
+        elif ocf < 0:
+            status, detail = "hit", "经营失血；" + detail
+        elif icf > 0:
+            status, detail = "watch", "投资现金流为正（需确认是否理财/存款到期）；" + detail
+        elif fin_cf > 0:
+            status, detail = "watch", "经营造血但仍在净融资；" + detail
+        else:
+            status, detail = "clear", "经营造血 + 投资扩张 + 净还债；" + detail
+        add("cashflow_pattern", "质量", "三流组合", status, detail, "中")
+
+    # 8 在建工程 / 固定资产（连续递增 = 扩产）
+    ratios = []
+    for row in ys[-3:]:
+        r = div(row.get("construction"), row.get("fixed_asset"))
+        ratios.append(r)
+    if all(r is None for r in ratios):
+        add("construction", "质量", "在建工程", "unknown", "无在建工程科目（轻资产或未披露）", "中")
+    else:
+        seq = [f"{_p(r * 100) if r is not None else '—'}" for r in ratios]
+        detail = f"在建工程/固资 {' → '.join(seq)}"
+        rising = (len(ratios) == 3 and None not in ratios
+                  and ratios[2] > ratios[1] > ratios[0])
+        debt_up = (_growth(latest.get("debt"), prev.get("debt")) or 0) > 0
+        if rising:
+            detail = (("借钱扩产（同期有息负债增加）" if debt_up else "自有资金扩产（同期有息负债未增）")
+                      + "：" + detail)
+            add("construction", "质量", "在建工程", "watch", detail, "中",
+                tag="借钱扩产" if debt_up else "自有资金扩产")
+        else:
+            add("construction", "质量", "在建工程", "clear", detail, "中")
+
+    # 9 每股口径（股本扩张 且 每股营收/每股 OCF 未增）
+    base = ys[-4] if len(ys) >= 4 else (ys[0] if ys else {})
+    shares_g = _growth(latest.get("shares"), base.get("shares"))
+    if shares_g is None:
+        add("per_share", "质量", "每股口径", "unknown", "股本数据不足", "中")
+    else:
+        rev_ps = div(latest.get("revenue"), latest.get("shares"))
+        rev_ps0 = div(base.get("revenue"), base.get("shares"))
+        ocf_ps = div(latest.get("ocf"), latest.get("shares"))
+        ocf_ps0 = div(base.get("ocf"), base.get("shares"))
+        rev_g = _growth(rev_ps, rev_ps0)
+        ocf_g = _growth(ocf_ps, ocf_ps0)
+        detail = (f"股本 {_delta_pct(shares_g)}｜每股营收 {_delta_pct(rev_g)}"
+                  f"｜每股 OCF {_delta_pct(ocf_g)}")
+        if shares_g <= 0:
+            add("per_share", "质量", "每股口径", "clear", "股本未扩张；" + detail, "中")
+        elif (rev_g is not None and rev_g <= 0) or (ocf_g is not None and ocf_g <= 0):
+            add("per_share", "质量", "每股口径", "hit", "股本扩张但每股指标未增；" + detail, "中")
+        else:
+            add("per_share", "质量", "每股口径", "clear", detail, "中")
+
+    # ================= 安全 =================
+    # 10 现金短债比（+ 速动比率，记分不否决）
+    short_all = [latest.get("short_loan"), latest.get("ncl_1y")]
+    quick = latest.get("quick_ratio")
+    quick_txt = f"；速动 {_n(quick)}" + ("（< 0.7 记 1 分）" if quick is not None and quick < config.QUICK_RATIO_WATCH else "")
+    if all(v is None for v in short_all):
+        # 有资产负债表但短期借款/一年内到期都是空 → 公司确实没有短期有息负债；
+        # 整张表都没有（latest 为空）→ 什么都不知道，不能判“通过”。
+        if latest.get("total_assets") is None:
+            add("cash_debt", "安全", "现金短债比", "unknown", "缺少资产负债表数据", "高")
+        else:
+            add("cash_debt", "安全", "现金短债比", "clear", "无短期有息负债" + quick_txt, "高")
+    elif latest.get("cash") is None:
+        add("cash_debt", "安全", "现金短债比", "unknown", "货币资金字段缺失", "高")
+    else:
+        short = sum(v or 0.0 for v in short_all)
+        if short <= 0:
+            add("cash_debt", "安全", "现金短债比", "clear", "无短期有息负债" + quick_txt, "高")
+        else:
+            cdr = latest["cash"] / short
+            if cdr > config.CASH_DEBT_RATIO_CALM:
+                detail = f"无短债压力（货币资金 {_yi(latest['cash'])} vs 短债 {_yi(short)}）"
+            else:
+                detail = f"货币资金 {_yi(latest['cash'])} / 短债 {_yi(short)} = {_n(cdr)}"
+            if cdr < config.CASH_DEBT_RATIO_FATAL:
+                status = "hit"
+            elif cdr < config.CASH_DEBT_RATIO_MIN:
+                status = "watch"
+            else:
+                status = "clear"
+            add("cash_debt", "安全", "现金短债比", status, detail + quick_txt, "高")
+
+    # 11 杠杆 + 有息负债趋势（看趋势不看绝对值）
+    net_debt = None
+    if latest.get("debt") is not None and latest.get("cash") is not None:
+        net_debt = latest["debt"] - latest["cash"]
     nd_ebit = div(net_debt, latest.get("ebit"))
+    debt_g = _growth(latest.get("debt"), base.get("debt"))
+    debt_txt = (f"有息负债 {_yi(base.get('debt'))} → {_yi(latest.get('debt'))}（{_delta_pct(debt_g)}）"
+                if latest.get("debt") is not None else "有息负债字段缺失")
     if nd_ebit is None:
-        add("leverage", "杠杆", "unknown", "有息负债/现金/EBIT 字段不足", "高")
+        add("leverage", "安全", "杠杆", "unknown", "有息负债/现金/EBIT 字段不足；" + debt_txt, "高")
     else:
-        add("leverage", "杠杆", "hit" if nd_ebit > config.NET_DEBT_EBIT_MAX else "clear",
-            f"净有息负债/EBIT = {nd_ebit:.2f}", "高")
+        add("leverage", "安全", "杠杆",
+            "hit" if nd_ebit > config.NET_DEBT_EBIT_MAX else "clear",
+            f"净有息负债/EBIT = {_n(nd_ebit)}；{debt_txt}", "高")
 
-    # 4 利息保障
+    # 12 利息负担（EBIT/利息，并列毛利额/财务费用）
     fin = latest.get("finance_expense")
     ebit = latest.get("ebit")
+    rev_ttm = latest.get("revenue")
+    gm = latest.get("gross_margin")
+    gross_profit = (rev_ttm * gm / 100.0) if (rev_ttm is not None and gm is not None) else None
     if fin is None or ebit is None:
-        add("interest", "利息保障", "unknown", "利息费用或 EBIT 缺失", "高")
+        add("interest", "安全", "利息负担", "unknown", "利息费用或 EBIT 缺失", "高")
     elif fin <= 0:
-        add("interest", "利息保障", "clear", "净利息收入，无利息覆盖压力", "高")
+        add("interest", "安全", "利息负担", "clear", "净利息收入，无利息覆盖压力", "高")
     else:
         cover = ebit / fin
-        add("interest", "利息保障", "hit" if cover < config.INTEREST_COVER_MIN else "clear",
-            f"EBIT/利息费用 = {cover:.1f}x", "高")
+        gross_cover = div(gross_profit, fin)
+        detail = f"EBIT/利息费用 = {_n(cover, 1)}x"
+        if gross_cover is not None:
+            detail += f"；毛利额/利息 = {_n(gross_cover, 1)}x"
+            if gross_cover < config.INTEREST_COVER_MIN and cover >= config.INTEREST_COVER_MIN:
+                detail += "（为银行打工）"
+        hit = cover < config.INTEREST_COVER_MIN or (
+            gross_cover is not None and gross_cover < config.INTEREST_COVER_MIN)
+        add("interest", "安全", "利息负担", "hit" if hit else "clear", detail, "高")
 
-    # 5 商誉
-    gw = latest.get("goodwill")
-    eq = latest.get("equity")
+    # 13 商誉（20% 警惕 / 30% 高危）
+    gw, eq = latest.get("goodwill"), latest.get("equity")
     if gw is None or eq in (None, 0):
-        add("goodwill", "商誉", "unknown", "商誉或净资产字段缺失", "高")
+        add("goodwill", "安全", "商誉", "unknown", "商誉或净资产字段缺失", "高")
     else:
         ratio = gw / eq
-        add("goodwill", "商誉", "hit" if ratio > config.GOODWILL_EQUITY_MAX else "clear",
-            f"商誉/归母净资产 = {ratio * 100:.1f}%" +
-            ("（接口未返回商誉，按 0 处理，建议核对年报）" if latest.get("goodwill_imputed") else ""), "高")
+        detail = f"商誉/归母净资产 = {_p(ratio * 100)}" + (
+            "（接口未返回商誉，按 0 处理，建议核对年报）" if latest.get("goodwill_imputed") else "")
+        if ratio > config.GOODWILL_EQUITY_WARN:
+            status = "hit"
+        elif ratio > config.GOODWILL_EQUITY_MAX:
+            status = "watch"
+        else:
+            status = "clear"
+        add("goodwill", "安全", "商誉", status, detail, "高")
 
-    # 6 应收/存货背离
-    if not prev or not latest:
-        add("ar_inventory", "应收/存货背离", "unknown", "缺少上一年度数据")
+    # 14 其他应收款/总资产（造假高发科目）
+    oar, ta = latest.get("other_ar"), latest.get("total_assets")
+    if oar is None or ta in (None, 0):
+        add("other_receivable", "安全", "其他应收款", "unknown", "其他应收款或总资产字段缺失", "中")
     else:
-        rg = div((latest.get("revenue") or 0) - (prev.get("revenue") or 0), prev.get("revenue"))
-        ag = div((latest.get("ar") or 0) - (prev.get("ar") or 0), prev.get("ar"))
-        ig = div((latest.get("inventory") or 0) - (prev.get("inventory") or 0), prev.get("inventory"))
-        hit = (rg is not None and rg < 0 and ((ag is not None and ag > config.AR_INV_GROWTH_ALERT)
-                                              or (ig is not None and ig > config.AR_INV_GROWTH_ALERT)))
-        add("ar_inventory", "应收/存货背离", "hit" if hit else "clear",
-            f"营收 {_p(rg * 100 if rg is not None else None)}；应收 {_p(ag * 100 if ag is not None else None)}；存货 {_p(ig * 100 if ig is not None else None)}")
+        ratio = oar / ta
+        ap_g = _growth(latest.get("other_ap"), prev.get("other_ap"))
+        detail = f"其他应收款/总资产 = {_p(ratio * 100, 2)}"
+        if ap_g is not None:
+            detail += f"；其他应付款同比 {_delta_pct(ap_g)}"
+        if ratio > config.OTHER_AR_ASSETS_MAX:
+            if ap_g is not None and ap_g > 0:
+                status = "hit"
+                detail += "（其他应付同步增加，疑似资金体外循环）"
+            else:
+                status = "watch"
+        else:
+            status = "clear"
+        add("other_receivable", "安全", "其他应收款", status, detail, "中")
 
-    # 7 非经常性利润
-    ratio = div(latest.get("deducted"), latest.get("net_profit"))
-    if ratio is None or (latest.get("net_profit") or 0) <= 0:
-        add("nonrecurring", "非经常性利润", "unknown", "扣非净利润缺失或归母为负")
-    else:
-        add("nonrecurring", "非经常性利润", "hit" if ratio < config.NONRECURRING_RATIO_MIN else "clear",
-            f"扣非/归母 = {ratio * 100:.1f}%")
+    if _is_financial(data):
+        for c in checks:
+            if c["key"] in config.FINANCIAL_INAPPLICABLE_CHECKS:
+                # 金融股的毛利率/净利率本身没有可比口径，同比环比对照也不该展示
+                c.update(status="na", detail="金融股口径不适用（本工具不做该科目判定）",
+                         tag="", compare={})
+            elif c["key"] == "leverage" and c["status"] == "unknown":
+                # 银行的“有息负债”混了同业存放/存款，绝对值与 EBIT 都不可比，
+                # 只报“字段不足”而不摆那个数量级，避免读者误读。
+                c["detail"] = "金融股不适用本口径（有息负债含同业负债，EBIT 不可比）"
 
-    # 8 少数股东
-    total_np = latest.get("net_profit_total")
-    parent_np = latest.get("net_profit")
-    if total_np in (None, 0) or parent_np is None or total_np <= 0 or parent_np <= 0:
-        add("minority", "少数股东", "unknown", "净利润总额无法从接口直接取得或为负")
-    else:
-        minority = 1 - parent_np / total_np
-        add("minority", "少数股东", "hit" if minority > 0.30 else "clear",
-            f"少数股东损益占比约 {minority * 100:.1f}%")
-
-    # 9 股本稀释：用最近 3 年，避免把 IPO 当年的一次性扩张误判为持续稀释
-    base = ys[-4] if len(ys) >= 4 else (ys[0] if ys else {})
-    dilution = cagr(base.get("shares"), latest.get("shares"),
-                    (latest.get("year") or 0) - (base.get("year") or 0) if base else None)
-    if dilution is None:
-        add("dilution", "股本稀释", "unknown", "股本数据不足")
-    else:
-        add("dilution", "股本稀释", "hit" if dilution / 100 > config.SHARE_DILUTION_MAX else "clear",
-            f"近 3 年股本 CAGR = {dilution:.2f}%" + ("（可能含 IPO/增发，需核对）" if dilution > 10 else ""))
-
-    # 10 短期偿债
-    cr, qr = latest.get("current_ratio"), latest.get("quick_ratio")
-    if cr is None or qr is None:
-        add("liquidity", "短期偿债", "unknown", "流动/速动比率缺失")
-    else:
-        add("liquidity", "短期偿债", "hit" if (cr < config.CURRENT_RATIO_MIN and qr < config.QUICK_RATIO_MIN) else "clear",
-            f"流动比率 {cr:.2f}；速动比率 {qr:.2f}")
     return checks
 
 
+# 组合定性用的标签：key+状态 → 一句话里的关键词（construction 单独在检查里给）
+_CHECK_TAGS = {
+    ("ar_gap", "hit"): "赊销",
+    ("ar_gap", "watch"): "赊销",
+    ("cash_flow", "hit"): "现金弱",
+    ("cash_flow", "watch"): "现金弱",
+    ("cash_debt", "hit"): "短债",
+    ("cash_debt", "watch"): "短债",
+    ("leverage", "hit"): "加杠杆",
+    ("inventory_gap", "hit"): "库存",
+    ("inventory_gap", "watch"): "库存",
+    ("margin_improve", "hit"): "毛利走弱",
+    ("cashflow_pattern", "hit"): "失血",
+    ("nonrecurring", "hit"): "非经常",
+    ("other_receivable", "hit"): "体外",
+    ("per_share", "hit"): "摊薄",
+}
+
+
+def _pattern_summary(checks: list[dict[str, Any]]) -> str:
+    """把命中的检查拼成一句组合定性（手册第 6 步：单一指标不足以定性）。"""
+    tags = {c.get("tag") for c in checks
+            if c.get("tag") and c.get("status") in ("hit", "watch")}
+    hits = [c for c in checks if c.get("status") == "hit"]
+    if not tags and not hits:
+        return ""
+    rules = [
+        ({"赊销", "现金弱"}, "疑似赊销冲量：收入靠放宽账期换来，现金没跟上"),
+        ({"短债", "加杠杆"}, "借钱垫资：短债覆盖不住，还在加杠杆"),
+        ({"借钱扩产"}, "借钱扩产：2~3 年后折旧压利润"),
+        ({"失血"}, "经营现金流为负，靠变卖或融资维持"),
+        ({"库存", "毛利走弱"}, "库存积压 + 毛利率走弱，注意降价去库"),
+        ({"非经常", "体外"}, "利润靠非经常性 + 资金体外循环，需查关联方"),
+        ({"摊薄"}, "股本扩张但每股指标未增，股东价值被摊薄"),
+        ({"短债"}, "短债覆盖不足，先看现金能不能撑过一年"),
+    ]
+    phrases: list[str] = []
+    for need, phrase in rules:
+        if need <= tags and phrase not in phrases:
+            phrases.append(phrase)
+        if len(phrases) >= 2:
+            break
+    if not phrases:
+        names = [c.get("name") or c["key"] for c in hits]
+        return ("命中 " + "、".join(names[:3])) if names else ""
+    return " + ".join(phrases)
+
+
 def _fatal(data: dict[str, Any], checks: list[dict[str, Any]]) -> list[str]:
+    """致命项：只有下面 4 条会把结论直接打成“回避”。
+
+    0.8.0 新增的现金短债比 / 净现比只做「命中后在结论行点名」，不升级为致命，
+    否则会把“借钱但周转正常”的公司一刀切。
+    """
     latest = _latest(data)
     fatal: list[str] = []
     if latest.get("equity") is not None and latest["equity"] <= 0:
         fatal.append("净资产为负")
-    for c in checks:
-        if c["key"] == "interest" and c["status"] == "hit" and "EBIT/利息费用" in c["detail"]:
-            # 这里不直接判 <1，渲染层会给出具体值；保留命中作为高风险信号
-            pass
     fin, ebit = latest.get("finance_expense"), latest.get("ebit")
     if fin is not None and fin > 0 and ebit is not None and ebit / fin < 1:
         fatal.append("利息保障 < 1")
@@ -313,7 +874,9 @@ def _forecast_metrics(data: dict[str, Any]) -> dict[str, Any]:
                      and forecast_pe is not None and forecast_pe > 0) else None)
 
     annual = (data.get("financials") or {}).get("annual") or []
-    base = annual[-1] if annual else {}
+    # financials.annual 是「最新在前」的降序列表，基数必须取 annual[0]；
+    # 取 annual[-1] 会退到最早一年：年数被拉长、且用更小的旧基数，成长股增速会被高估。
+    base = annual[0] if annual else {}
     base_np = num(base.get("net_profit"))
     growth = None
     growth_count = 0
@@ -426,7 +989,8 @@ def _data_quality(data: dict[str, Any], q: dict[str, Any], checks: list[dict[str
     """数据完整度：只做展示和“可买”前置条件，不再生成 0~100 置信度。"""
     total = len(checks)
     unknown_items = [c for c in checks if c.get("status") == "unknown"]
-    known = total - len(unknown_items)
+    na_items = [c for c in checks if c.get("status") == "na"]
+    known = total - len(unknown_items) - len(na_items)
     critical_unknown = [
         c.get("name") or c.get("key")
         for c in unknown_items
@@ -448,6 +1012,7 @@ def _data_quality(data: dict[str, Any], q: dict[str, Any], checks: list[dict[str
         "risk_total": total,
         "risk_known": known,
         "risk_unknown": len(unknown_items),
+        "risk_na": len(na_items),
         "critical_unknown": critical_unknown,
         "institution_coverage": coverage,
         "q_coverage": round(q_coverage, 1),
@@ -455,9 +1020,81 @@ def _data_quality(data: dict[str, Any], q: dict[str, Any], checks: list[dict[str
     }
 
 
+def _gate_level(risks: dict[str, Any]) -> str | None:
+    """闸门会把买入类结论压到哪一档：'avoid' / 'watch' / None（不触发）。
+
+    单独抽出来是因为报告要写一句“有没有触发降级”：结论本身已经是回避时，
+    命中数可能已经过了线，这时要说明“已达降级线但结论不是买入类”，
+    而不是含糊地写“未触发”。
+    """
+    checks = risks.get("checks") or []
+    hits = [c for c in checks if c.get("status") == "hit"]
+    watches = [c for c in checks if c.get("status") == "watch"]
+    if any(c.get("key") in config.RISK_HEADLINE_KEYS for c in hits) or len(hits) >= 2:
+        return "avoid"
+    if len(watches) >= 2 or len(hits) == 1:
+        return "watch"
+    return None
+
+
+def _risk_gate(result: dict[str, Any], risks: dict[str, Any]) -> dict[str, Any] | None:
+    """决策矩阵的一致性闸门（0.9.0）：第二节的信号必须在结论层生效。
+
+    Q 是连续打分，第二节是阈值判定，同一科目可能在 Q 里扣分、又在第二节命中。
+    结论取两者中更谨慎的一方，因此买入类结论要能被第二节否掉：
+
+    - 命中 ≥2 项，或一票否决位（现金流质量 / 现金短债比）命中 → 降为回避；
+    - 提示 ≥2 项，或命中 1 项 → 降为「观察，第二节有信号」；
+    - 命中的项多到一定程度时理由里点名，读者能直接回第二节核对。
+
+    只在**买入方向**生效：太贵、回避这些负面结论本来就更谨慎，不需要再降一次，
+    也避免“数据缺失”被变成“更保守等于更好”（数据不足仍走 buy_blockers 的老规则）。
+    """
+    if result.get("key") not in config.BUY_KEYS:
+        return None
+    checks = risks.get("checks") or []
+    hits = [c for c in checks if c.get("status") == "hit"]
+    watches = [c for c in checks if c.get("status") == "watch"]
+    headline = [c for c in hits if c.get("key") in config.RISK_HEADLINE_KEYS]
+    level = _gate_level(risks)
+
+    def _names(items: list[dict[str, Any]], limit: int = 3) -> str:
+        names = [c.get("name") or c.get("key") for c in items]
+        more = f" 等 {len(names)} 项" if len(names) > limit else ""
+        return "、".join(names[:limit]) + more
+
+    if level == "avoid":
+        if headline:
+            reason = f"第二节一票否决位命中（{_names(headline)}）"
+            if len(hits) > len(headline):
+                reason += f"，另有 {len(hits) - len(headline)} 项命中"
+        else:
+            reason = f"第二节命中 {len(hits)} 项（{_names(hits)}）"
+        return {"key": "avoid", "label": "回避", "hits": len(hits), "watches": len(watches),
+                "note": f"第二节：命中 {len(hits)} 项、提示 {len(watches)} 项 → 买入类结论降级为回避",
+                "reason": f"{reason}，按质量与估值本可「{result['label']}」，"
+                          f"但风险信号未消化，结论降为回避"}
+    if level == "watch":
+        part = []
+        if hits:
+            part.append(f"命中 {len(hits)} 项（{_names(hits)}）")
+        if watches:
+            part.append(f"提示 {len(watches)} 项")
+        return {"key": "watch", "label": "观察，第二节有信号",
+                "hits": len(hits), "watches": len(watches),
+                "note": f"第二节：{'、'.join(part)} → 买入类结论降级为观察",
+                "reason": f"第二节{'、'.join(part)}，按质量与估值本可「{result['label']}」，"
+                          f"先看第二节原文再决定"}
+    return None
+
+
 def _decision(q: dict[str, Any], v: dict[str, Any], fatal: list[str],
-              data_quality: dict[str, Any]) -> dict[str, Any]:
-    """质量调整后的估值门槛：Q 越低，要求的 V 越高；Q<45 禁止买入。"""
+              data_quality: dict[str, Any], risks: dict[str, Any] | None = None) -> dict[str, Any]:
+    """质量调整后的估值门槛：Q 越低，要求的 V 越高；Q<45 禁止买入。
+
+    0.9.0 起多一道一致性闸门：矩阵给出买入类结论后，还要过一遍第二节的命中/提示。
+    `risks` 单独传而不是塞进 `buy_blockers`——否则读者分不清“没算出来”和“算出来不好”。
+    """
     qs, vs = q.get("score"), v.get("score")
     if fatal:
         return {"key": "avoid", "label": "回避", "reason": "出现致命风险：" + "；".join(fatal)}
@@ -500,6 +1137,11 @@ def _decision(q: dict[str, Any], v: dict[str, Any], fatal: list[str],
         else:
             result = {"key": "avoid", "label": "回避", "reason": "质量偏弱且估值不便宜"}
 
+    # 闸门先于数据完整性：命中两项的“回避”比“数据不全”的“观察”更重，不能被后者盖掉
+    gate = _risk_gate(result, risks or {})
+    if gate:
+        return gate
+
     # 数据不完整时，所有买入类结论降为观察，但不改变 Q<45 的回避。
     blockers = data_quality.get("buy_blockers") or []
     if result["key"] in config.BUY_KEYS and blockers:
@@ -539,42 +1181,52 @@ def _expectation_flags(data: dict[str, Any], v: dict[str, Any]) -> list[str]:
 
 
 def _moat(data: dict[str, Any]) -> dict[str, Any]:
-    """护城河只看量化证据，不写行业故事。"""
+    """护城河：只看量化证据，不写行业故事，也不给 0~100 分。
+
+    三条证据（手册 8.2）：定价权、资本回报、现金创造。
+    3 条成立 = 宽护城河；2 条 = 窄；≤1 条 = 无明显护城河。
+    """
+    if _is_financial(data):
+        return {"level": "不适用", "evidence": [], "reasons": ["金融股口径不适用"], "not_applicable": True}
     ys = _years(data)
     if len(ys) < 3:
-        return {"level": "数据不足", "score": None, "reasons": ["年报不足 3 年，无法判断持续性"]}
-    roic = median([y.get("roic") for y in ys])
-    spread = (roic - config.WACC) if roic is not None else None
-    fcf_margin = median([(y.get("fcf_margin") * 100 if y.get("fcf_margin") is not None else None) for y in ys])
-    roe = median([y.get("roe") for y in ys])
-    gm_std = stdev([y.get("gross_margin") for y in ys])
-    above = sum(1 for y in ys if (y.get("roic") is not None and y["roic"] > config.WACC))
-    total = 0.0
-    max_total = 0.0
-    checks = [
-        (linear(spread, 0, 15, 40), 40),
-        (linear(fcf_margin, 0, 15, 25), 25),
-        (linear(roe, 8, 20, 15), 15),
-        (inverse(gm_std, 0, 5, 10), 10),
-        (above / len(ys) * 10, 10),
-    ]
-    for value, weight in checks:
-        if value is not None:
-            total += value
-            max_total += weight
-    score = (total / max_total * 100.0) if max_total else None
-    level = "宽护城河" if score is not None and score >= 70 else ("窄护城河" if score is not None and score >= 45 else "无明显护城河")
-    if score is None:
-        level = "数据不足"
-    reasons = []
-    if spread is not None:
-        reasons.append(f"5 年 ROIC 中位数 {roic:.1f}%，相对 WACC {config.WACC:.1f}% 的差值为 {spread:+.1f}pct")
-    if fcf_margin is not None:
-        reasons.append(f"5 年 FCF/营收中位数 {fcf_margin:.1f}%")
-    if roe is not None:
-        reasons.append(f"5 年 ROE 中位数 {roe:.1f}%")
-    reasons.append(f"ROIC 高于 WACC 的年度：{above}/{len(ys)}")
-    return {"level": level, "score": round(score, 1) if score is not None else None, "reasons": reasons}
+        return {"level": "数据不足", "evidence": [], "reasons": ["年报不足 3 年，无法判断持续性"]}
+
+    gm = [y.get("gross_margin") for y in ys if y.get("gross_margin") is not None]
+    roic = [y.get("roic") for y in ys if y.get("roic") is not None]
+    fcfm = [y.get("fcf_margin") for y in ys if y.get("fcf_margin") is not None]
+
+    gm_med, gm_std = median(gm), stdev(gm)
+    ok1 = (gm_med is not None and gm_std is not None
+           and gm_med >= config.MOAT_GROSS_MARGIN_MIN and gm_std <= config.MOAT_GROSS_MARGIN_STD)
+    ev1 = {"name": "定价权", "ok": ok1,
+           "detail": (f"毛利率 {_p(gm_med)}（5 年 σ {_n(gm_std)}pct）"
+                      f"，要求 ≥ {config.MOAT_GROSS_MARGIN_MIN:.0f}% 且 σ ≤ {config.MOAT_GROSS_MARGIN_STD:.0f}pct")}
+
+    roic_med = median(roic)
+    spread = (roic_med - config.WACC) if roic_med is not None else None
+    above = sum(1 for v in roic if v > config.WACC)
+    need_above = min(config.MOAT_ROIC_ABOVE_YEARS, len(roic)) if roic else 0
+    ok2 = (spread is not None and spread >= config.MOAT_ROIC_SPREAD_MIN and above >= need_above)
+    ev2 = {"name": "资本回报", "ok": ok2,
+           "detail": (f"ROIC {_p(roic_med)} vs WACC {config.WACC:.1f}%（{spread:+.1f}pct，{above}/{len(roic)} 年高于 WACC）"
+                      if spread is not None else "ROIC 数据不足")}
+
+    fcf_med = (median(fcfm) * 100.0) if fcfm else None
+    neg = sum(1 for v in fcfm if v <= 0)
+    ok3 = (fcf_med is not None and fcf_med >= config.MOAT_FCF_MARGIN_MIN and neg <= 1)
+    ev3 = {"name": "现金创造", "ok": ok3,
+           "detail": (f"FCF/营收 {_p(fcf_med)}，{len(fcfm)} 年中 {neg} 年为负"
+                      f"，要求 ≥ {config.MOAT_FCF_MARGIN_MIN:.0f}% 且负年数 ≤ 1"
+                      if fcf_med is not None else "FCF 数据不足")}
+
+    evidence = [ev1, ev2, ev3]
+    met = sum(1 for e in evidence if e["ok"])
+    level = "宽护城河" if met == 3 else ("窄护城河" if met == 2 else "无明显护城河")
+    reasons = [f"{'✅' if e['ok'] else '❌'} {e['name']}：{e['detail']}" for e in evidence]
+    return {"level": level, "evidence": evidence, "reasons": reasons, "met": met,
+            "total": len(evidence)}
+
 
 def _tracking(data: dict[str, Any], q: dict[str, Any]) -> list[dict[str, str]]:
     latest = _latest(data)
@@ -585,8 +1237,11 @@ def _tracking(data: dict[str, Any], q: dict[str, Any]) -> list[dict[str, str]]:
     if roic is not None:
         spread = roic - config.WACC
     items.append({"metric": "ROIC−WACC", "current": _p(spread), "threshold": "> 0", "frequency": "每年"})
-    items.append({"metric": "CFO/净利润", "current": _n(div(latest.get("ocf"), latest.get("net_profit"))),
-                  "threshold": f"≥ {config.CFO_NI_FLOOR:.1f}", "frequency": "每季"})
+    # 与第二节检查 1 同口径（TTM）、同阈值（CASH_NI_OK），不再单独维护一个 0.8 的跟踪线
+    cash_ni = div(latest.get("ocf_ttm") or latest.get("ocf"),
+                  latest.get("np_ttm") or latest.get("net_profit"))
+    items.append({"metric": "CFO/净利润(TTM)", "current": _n(cash_ni),
+                  "threshold": f"≥ {config.CASH_NI_OK:.1f}", "frequency": "每季"})
     nd = (latest.get("debt") - latest.get("cash")) if latest.get("debt") is not None and latest.get("cash") is not None else None
     items.append({"metric": "净有息负债/EBIT", "current": _n(div(nd, latest.get("ebit"))),
                   "threshold": f"≤ {config.NET_DEBT_EBIT_MAX:.0f}", "frequency": "每季"})
@@ -597,24 +1252,58 @@ def _tracking(data: dict[str, Any], q: dict[str, Any]) -> list[dict[str, str]]:
     pe = (data["valuation"].get("metrics") or {}).get("pe") or {}
     items.append({"metric": "PE 分位", "current": f"{pe.get('percentile', '—')}%" if pe else "—",
                   "threshold": "< 80%", "frequency": "每月"})
-    items.append({"metric": "DCF 折价", "current": _p(data.get("dcf", {}).get("margin_pct")),
-                  "threshold": "> 0", "frequency": "每年"})
     items.append({"metric": "机构一致预期", "current": f"{len((data.get('forecast') or {}).get('forecasts') or [])} 个年度",
                   "threshold": "不下修、不空覆盖", "frequency": "每季"})
     return items
 
 
+def _is_financial(data: dict[str, Any]) -> bool:
+    industry = str((data.get("meta") or {}).get("industry") or "")
+    return any(k in industry for k in config.FINANCIAL_INDUSTRY_KEYWORDS)
+
+
 def compute_scores(data: dict[str, Any]) -> dict[str, Any]:
+    financial = _is_financial(data)
     q = _quality(data)
     v = _valuation_score(data)
+    if financial:
+        # 银行/保险/证券：FCF、速动比率、有息负债口径都不可比，打分只会得出“低质量”的假象。
+        q = {"score": None, "grade": "金融股不适用", "groups": [], "coverage": 0.0,
+             "not_applicable": True}
+        v = {"score": None, "grade": "金融股不适用", "parts": [], "coverage": 0.0,
+             "not_applicable": True}
     checks = _risk_checks(data)
     fatal = _fatal(data, checks)
+    hits = [c for c in checks if c["status"] == "hit"]
+    watches = [c for c in checks if c["status"] == "watch"]
+    risks = {
+        "checks": checks,
+        "fatal": fatal,
+        "hits": len(hits),
+        "watches": len(watches),
+        "unknown": sum(1 for c in checks if c["status"] == "unknown"),
+        "clears": sum(1 for c in checks if c["status"] == "clear"),
+        "headline": [c["name"] for c in checks
+                     if c["key"] in config.RISK_HEADLINE_KEYS and c["status"] in ("hit", "watch")],
+        "summary": _pattern_summary(checks),
+    }
+    # 报告第四节要写“有没有触发降级”，这里先算好，避免 render 再抄一遍阈值
+    risks["gate_level"] = _gate_level(risks)
     data_quality = _data_quality(data, q, checks)
-    decision = _decision(q, v, fatal, data_quality)
+    if financial:
+        data_quality["buy_blockers"] = ["金融股不适用：FCF / 速动比率 / 有息负债口径不可比"]
+    decision = _decision(q, v, fatal, data_quality, risks)
+    if financial:
+        decision = {
+            "key": "unknown",
+            "label": "金融股不适用，不做初筛",
+            "reason": "银行/保险/证券的 FCF、速动比率与有息负债口径与工商企业不可比，"
+                      "本工具不输出 Q/V 结论；请看第二节的风险检查原文",
+        }
     data["quality"] = q
     data["moat"] = _moat(data)
     data["valuation_score"] = v
-    data["risks"] = {"checks": checks, "fatal": fatal, "hits": sum(1 for c in checks if c["status"] == "hit")}
+    data["risks"] = risks
     data["data_quality"] = data_quality
     data["decision"] = decision
     data["flags"] = _expectation_flags(data, v)

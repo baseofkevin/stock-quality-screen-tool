@@ -12,6 +12,605 @@
 
 ---
 
+## 2026-11-10 16:00 +08:00
+
+### 修改（`--csv-input` 的帮助文案名不副实，v0.9.1 → 0.9.2）
+
+**背景**：`--help` 里原来写的是
+
+```text
+--csv-input CSV_INPUT   批量模式：CSV 路径，读取其中的股票代码，生成报告并回写 CSV
+```
+
+三处对不上：
+
+1. **名字说“输入”，行为是“读写”**：这个参数会**就地改写**传入的 CSV（末尾补三列），
+   上一版刚把产物从输入目录挪走（`csv-input/` → `xlsx-output/`），“输入文件被改写”就更该显式警告；
+2. 回写**哪几列**没写，`HTML报告链接` 这类带超链接的列读者无从得知；
+3. 结果 Excel 去哪没写（现在固定 `xlsx-output/`），容易被理解成“还在输入目录里”。
+
+#### 修改
+
+- `stock_report.py`：主参数名改为 `--csv`，`--csv-input` 保留为**同义旧名**（同一个
+  action、同一个 `dest="csv_input"`，脚本不用改），帮助文本重写为：
+  “读取 代码/股票代码/证券代码/code 列 → 逐只生成报告 → **就地改写**该 CSV、末尾补三列
+  （综合评分 / HTML报告链接 / 东方财富网股票详情）→ 结果 Excel 另存到 `xlsx-output/`”。
+- 两条批量模式错误提示同步改成“批量模式（--csv）…”，不再只提旧名。
+- 模块 docstring 的用法示例改用 `--csv`，并补一句“原 CSV 就地补三列，其余列与行序不动”。
+- `README.md`：批量示例改用 `--csv`（注明旧名）；“新增两列”更正为**三列**（原文列了三条，
+  数字写错）；补一段醒目提示“这个参数会改写传入的 CSV，别直接指向只读的原始选股表”。
+
+#### 测试
+
+- `tests/test_cli.py` 新增 3 个用例：`--csv` 与 `--csv-input` 落到同一个 `dest`；
+  两者都与 `--stock-code` 互斥；`format_help()` 必须含“就地改写 / HTML报告链接 / xlsx-output / --csv-input”
+  （断言前去掉空白，因为 argparse 会按终端宽度把 `xlsx-output` 拆成两行）。
+- `python3 -m unittest discover -s tests`：**405 个用例通过**（0.9.1 为 402）。
+
+---
+
+## 2026-11-10 15:47 +08:00
+
+### 修改（删掉重复的判定句 + `csv-input/` 改名 `xlsx-output/`，v0.9.0 → 0.9.1）
+
+**背景**：报告第一节里 `① 毛利率环比改善判定：未改善（C3 不成立）` 这句与标题右侧的
+badge（`［毛利率环比走弱］`）说的是同一件事，正文再念一遍纯属冗余；另外项目里的
+`csv-input/` 实际只装批量结果 Excel，名字和内容对不上。
+
+#### 删除
+
+- `screen/render.py`：`_margin_chart()` 不再输出 `<p>① 毛利率环比改善判定：<b>…</b></p>`，
+  以及配套的 `head = cmp.get("label") or improve.get("detail")`。
+  判定结论只保留在 badge 上，图表下方直接是「同比对照 → 环比对照 → 点名结论」三段。
+  `compare["label"]` 仍保留（第二节表格的 detail 在用），只是不再进正文。
+
+#### 修改
+
+- `config.py`：新增 `XLSX_OUT_DIR = PROJECT_DIR / "xlsx-output"`；版本号 → 0.9.1。
+- `stock_report.py`：新增 `_xlsx_target(table)`，批量结果 Excel 固定写
+  `xlsx-output/<输入 CSV 主名>.xlsx`（两处调用点：正常结束、`Ctrl-C` 中断时）。
+  以前是 `table.path.with_suffix(".xlsx")`，产物落在输入 CSV 旁边，输入目录被污染。
+- 目录：`csv-input/` → **`xlsx-output/`**（5 个历史 `.xlsx` 原样迁移）。
+- `.gitignore`：`/csv-input/` → `/xlsx-output/`，注释改成“HTML 报告 / 结果 Excel”。
+- `README.md`：批量模式产物说明改为 `xlsx-output/选股_2026-11-06.xlsx`，并写明
+  固定落在 `config.XLSX_OUT_DIR`、不写在输入 CSV 旁边。
+- `METHODOLOGY.md`：① 呈现改为三层，注明正文不再重复判定句；版本行 → 0.9.1。
+
+#### 测试
+
+- `tests/test_render.py`：新增 `test_margin_chart_does_not_repeat_verdict_headline`
+  （断言无“毛利率环比改善判定”、无“①”，badge 与三段文字仍在）、
+  `test_margin_chart_without_compare_has_no_judge_block`。
+- `tests/test_cli.py`：`BatchRunTest.setUp` 把 `config.XLSX_OUT_DIR` 指向临时目录，
+  避免测试写进项目的 `xlsx-output/`；新增 `test_xlsx_target_keeps_csv_stem_under_xlsx_output`；
+  `test_report_links_point_to_existing_files` 改为断言 Excel 落在 `xlsx-output/` 且
+  **不再**出现在输入 CSV 旁边；`test_defaults` 增加默认目录断言。
+- `tests/test_smoke.py`：`CsvBatchTest.setUp` 同样隔离 `XLSX_OUT_DIR`。
+- `python3 -m unittest discover -s tests`：**402 个用例通过**（0.9.0 为 399），
+  跑完 `xlsx-output/` 里仍是原来那 5 个文件，测试不污染产物目录。
+
+---
+
+## 2026-11-10 15:34 +08:00
+
+### 修改（质量分 Q 四处口径修正 + 决策矩阵一致性闸门，v0.8.1 → 0.9.0）
+
+**背景**：`质量分Q评分规则改造建议-第四节.md` 里逐个子项核账后确认 4 个口径漏洞，
+并指出 Q 与第二节"各判一遍、结论却不联动"。本轮按建议的方案 A + B 落地，**权重表一个字没动**
+（`QUALITY_WEIGHTS` 仍是 30/25/20/15/10）。
+
+#### 新增
+
+- `config.py`：`QUALITY_ITEM_MAX` 集中管理 16 个子项满分（每组合计 = 组权重，有测试断言守着）；
+  `QUALITY_GM_LEVEL_FLOOR = 15.0`、`QUALITY_GM_LEVEL_FULL = 25.0`（毛利率水平门槛，上限与护城河定价权同口径）；
+  `QUALITY_ACCRUAL_YEARS = 3`。
+- `screen/score.py`：`_gate_level(risks)` —— 闸门会把买入类结论压到 `avoid` / `watch` / `None`；
+  `_risk_gate(result, risks)` —— 实际降级并写明理由。
+- `data["risks"]["gate_level"]`：供第四节一致性行使用，避免 render 再抄一遍阈值。
+- 第四节 Q 卡片下一行一致性提示；`METHODOLOGY.md` §7 新增「一致性闸门」小节。
+
+#### 修改（A1~A4）
+
+- **A1 毛利率稳定性加水平门槛**：`inverse(σ, 0, 5, 4) × clamp((毛利率中位数 − 15) / 10, 0, 1)`。
+  σ 只说明稳不稳，不说明高不高——300058 毛利率中位 3.4%、σ 1.60，旧口径给 2.72 分，现在 **0 分**。
+- **A2 应计利润改近 3 年中位数**：单年预收/应付集中结算不再决定这一格；raw 同时给“单年 x%、3 年中位 y%”。
+  600519 单年 6.8%、3 年中位 3.0% → 1.60 → **3.51 分**。
+- **A3 现金组加 FCF/营收（0~15% → 0~4）**，FCF 为正年数由 10 分降到 6 分：
+  比值不受规模干扰，且与护城河「现金创造」同口径。
+- **A4 资本回报组加 `ROIC>WACC 年数`（比例 ×10）**，ROIC−WACC 20 → 14、ROE 10 → 6：
+  中位数看不出持续性（000725 5 年里只有 1 年高于 WACC）。分母用“有 ROIC 的年份”，缺数据不算低于 WACC。
+- `_decision(q, v, fatal, data_quality, risks=None)`：多收一个 `risks`，**没有**把命中数塞进
+  `buy_blockers`（那是“没算出来”，闸门是“算出来不好”，混在一起读者分不清）。`risks` 省略时不加闸门，老调用方不受影响。
+- 闸门规则：命中 ≥2 项或一票否决位（现金流质量/现金短债比）命中 → 买入类降**回避**；
+  提示 ≥2 项或命中 1 项 → 买入类降**观察，第二节有信号**；只压买入方向，负面结论不动；
+  **闸门先于数据完整性**（回避比观察重，不能被“机构覆盖不足”盖掉）。
+- `_tracking()`：`CFO/净利润` 改用 TTM 口径、阈值取 `config.CASH_NI_OK`（0.7），删掉单独的 `CFO_NI_FLOOR = 0.8`
+  ——原来跟踪线比判定线严 0.1，报告里两处数字看着像打架。
+- `screen/render.py` 第四节：标题改「质量分构成（五个维度，第二节不参与打分）」；正文改成
+  “Q 看 5 年长期水平、第二节看当期异常，判定方式不同，结论取更谨慎的一方”；
+  分档表后补一句“分档只是标签，不改变结论矩阵”；决策规则块补两条闸门规则。
+- `tests/test_quality.py`：`fcf_margin` 纳入完美公司夹具；缺数据用例补 `fcf_margin=None`；
+  应计 raw、ROIC/ROE 满分、子项数 14 → 16 等断言按新口径重算。
+- 文档：`METHODOLOGY.md` §3 重写（四处修正 + 分档说明）、§7 闸门；`README.md` 质量分表、结论矩阵、目录；版本号 → 0.9.0。
+
+#### 效果（4 只样本，同一批数据；与建议书 §6 完全对上）
+
+| 样本 | 旧 Q | 新 Q | 变化来源 |
+|---|--:|--:|---|
+| 600519 贵州茅台 | 89.0 | **90.9** | 应计改 3 年中位（1.60→3.51 分） |
+| 000725 京东方A | 40.6 | **40.7** | 资本回报 0→2.0（ROIC>WACC 1/5）、现金组 −1.97（FCF/营收 7.6% 只给 2.04/4） |
+| 300058 蓝色光标 | 56.5 | **50.1** | 毛利率稳定性 2.72→0（A1）、现金组 −3.7（FCF/营收 1.2% 给 0.31/4） |
+| 600036 招商银行 | 不适用 | 不适用 | 金融股不进入 Q |
+
+结论层三只都没变（好公司等价格 / 回避 / 回避）；300058 本就是回避，闸门不会再降。
+Q 卡片下新增的一致性行：600519「命中 0 项、提示 1 项 → 未触发降级」，
+300058「命中 1 项、提示 4 项 → 已达降级线（买入类会降为观察），但当前结论不是买入类，未再降级」。
+
+#### 修复
+
+- A1 落地时发现：只有 1 年披露毛利率时 `stdev()` 返回 `None`，`None × 水平修正` 会直接崩。
+  改为“σ 或中位数任一为空就不给分”，并加用例 `test_single_year_margin_is_not_scored` 守着。
+
+#### 测试
+
+`python3 -m unittest discover -s tests`：**399 个用例通过**（0.8.1 为 359），新增
+A1 边界 6、A2 中位数 3、A3 FCF/营收 5、A4 ROIC 年数 4、子项满分/权重 3、闸门 16、第四节 3、契约 1。
+
+---
+
+## 2026-11-10 15:20 +08:00
+
+### 修改（① 毛利率环比改善：从一句"未改善"改成六个数字 + 点名，v0.8.0 → 0.8.1）
+
+**背景**：报告里原来只有一句
+`① 毛利率环比改善判定：未改善（缺 C3）；✅环比增✅营收环比不降❌高于上年同季｜26Q3 毛利率 89.64%（环比 +0.38pct）…`，
+标题右侧的 badge 更是只有一个 `［未改善］`。读者看不出**是毛利率还是净利率还是营业收入、
+是同比还是环比**没改善。000725 就是典型：旧文案只说"缺 C2"，实际当期**营收同比 −8.6%、
+环比 −6.6%，净利率由 +2.54% 转成 −2.05%**，这些数字一个字都没露。
+
+#### 新增
+
+- `screen/score.py`：`_delta()`、`_change_level()`、`_rest_note()` 三个小工具；
+  `_margin_improve()` 改为返回 `(状态, 表格说明, compare)`，`compare` 含：
+  - `rows`：营业收入 / 毛利率 / 净利率 × 同比 / 环比 共 **6 个变化**（含数值、单位、等级）；
+  - `yoy_line` / `qoq_line`：两行可直接渲染的对照文本（带上年同季 / 上一季的原始值）；
+  - `verdict`：结论句，点名"未改善的是「指标+口径」（变化值）"，并交代其余项与缺数据项；
+  - `badge`：标题右侧标签文本；`cond`：C1/C2/C3 三个布尔值。
+- `config.py`：`MARGIN_IMPROVE_EPS` 继续作为比率型"持平"容差（0.05pct），营收用 ±0.1%。
+
+#### 修改
+
+- `screen/render.py`：`_margin_chart()` 的 badge 改用 `compare["badge"]`，
+  判定区从一行变成四行——判定结论、同比对照、环比对照、点名结论。
+- `screen/score.py`：`add()` 返回刚 append 的检查字典，便于挂 `compare`；
+  金融股的 `margin_improve` 同步清空 `compare`（银行没有毛利率可比口径）。
+- 文案：`未改善（缺 C3）` → `未改善（C3 不成立）`，并补 `改善（C1/C2/C3 成立）`、
+  `走弱（C1/C3 不成立）` 两种标签。
+- `tests/support.py`：`margin_data()` 支持第 4 个元素（单季净利率），夹具补齐净利率。
+- 测试：`MarginImproveTest` 由 6 个用例扩到 10 个（同比/环比六个数字、badge、
+  净利率独自走弱、净利率缺失、季报不连续时 `compare` 为空），总数 355 → **359**。
+
+#### 效果（4 只样本，同一批数据）
+
+| 样本 | 旧 badge | 新 badge | 新增可见的数字 |
+|---|:--:|:--:|---|
+| 600519 | ［未改善］ | ［毛利率同比走弱］ | 营收同比 +3.1%（旧文案没有）、净利率同比 +0.33pct |
+| 000725 | ［未改善］ | ［营业收入同比、环比下滑；净利率同比、环比走弱］ | 营收 −8.6% / −6.6%、净利率 −4.59pct / −8.84pct（转负） |
+| 300058 | ［未改善］ | ［毛利率环比走弱；营业收入同比下滑］ | 营收同比 −1.1%、净利率同比 −0.01pct（持平） |
+| 600036 | ［不适用］ | ［不适用］ | 金融股不输出对照 |
+
+#### 不变
+
+- **判定口径不变**：仍是 C1/C2/C3 三条件，净利率不参与判定（只在结论句提示），
+  所以 4 只样本的 `hit/watch/clear` 状态、Q/V 分、结论全部与 0.8.0 一致。
+
+---
+
+## 2026-11-10 14:47 +08:00
+
+### 修改（报告第一、二节指标改造，v0.7.11 → 0.8.0）
+
+**背景**：用 4 只真实样本（600519 / 000725 / 300058 / 600036）把第一、二节逐指标对照后，确认三类问题：
+
+1. 护城河 5 项加权评分为茅台算出 **99.3 分**——"接近满分"既不提供信息也不可信；
+2. 第二节 10 项检查有三个方向性漏洞：检查 6 要求"营收负增长"才会看应收，赊销冲量（营收 +30%/应收 +52%）直接判通过；流动比率看不出"短期借款 41 亿、现金 4.46 亿"这种明天就出事的结构；其他应收款、期间费用率两个排雷口完全空白；
+3. 股本稀释（3 年 CAGR >2%）把"增发换来增长"误报为摊薄：300058 股本 +44.1% 命中，但同期每股营收 +29.9%。
+
+按《指标对照与修改建议-报告第一二节》（已确认范围）落地。目标版本 `config.VERSION = "0.8.0"`。
+
+#### 新增
+
+- `config.py`：`RISK_CHECK_COUNT=14`、`RISK_GROUPS=("真伪","趋势","质量","安全")`、
+  `RISK_HEADLINE_KEYS=("cash_flow","cash_debt")`、
+  `FINANCIAL_INAPPLICABLE_CHECKS=(margin_improve, ar_gap, inventory_gap, construction, cash_debt)`。
+- `config.py`：护城河三证据阈值 `MOAT_GROSS_MARGIN_MIN=25 / MOAT_GROSS_MARGIN_STD=3 /
+  MOAT_ROIC_SPREAD_MIN=5 / MOAT_ROIC_ABOVE_YEARS=4 / MOAT_FCF_MARGIN_MIN=5`；
+  `MARGIN_IMPROVE_EPS=0.05`、`PAYABLE_SLIP_WEAK=0.30`、`PAYABLE_SLIP_STRONG=1.00`。
+- `config.py`：净现比四档 `CASH_NI_GOOD/OK/WEAK/TWO_YEAR`；现金短债比
+  `CASH_DEBT_RATIO_MIN/FATAL/CALM`；`AR_REV_GAP_ALERT / AR_MATERIAL_RATIO /
+  INV_REV_GAP_ALERT / INV_REV_GAP_HIGH / INV_MATERIAL_RATIO`；`OTHER_AR_ASSETS_MAX`；
+  `CL_GROWTH_MIN / CL_REV_MIN`；`EXPENSE_GROWTH_GAP`；`QUICK_RATIO_WATCH`。
+- `screen/compute.py`：`_period_record()` 增记 `ocf_ttm / icf / fcf_fin / working_capital /
+  receivable_fin / payable / other_ar / other_ap / contract_liability / advance_payment /
+  short_loan / ncl_1y / construction / fixed_asset / sell_expense / admin_expense /
+  rnd_expense / np_ttm` 18 个字段；`_margin_trend()` 每个点补 `revenue`（供 ① 判定用）。
+- `screen/compute.py`：新增 `_structure(annual, years=5)`，逐年输出
+  `bargain / payable / ar_inv / contract_ratio / construction_ratio / debt`，并汇总
+  `bargain_latest / bargain_trend / contract_latest / contract_yoy`；`build_financials()`
+  返回值增加 `structure`。
+- `screen/score.py`：新增 `_margin_improve()`（① 三条件：环比增、单季营收环比不降、高于上年同季，
+  按 `year*4+quarter` 定位上一季与上年同季）、`_yi / _delta_pct / _growth / _ar_total /
+  _contract_liab / _expense / _quarter_index` 等助手。
+- `screen/score.py`：新增 `_CHECK_TAGS`（key+状态 → 赊销/现金弱/短债/加杠杆/库存/毛利走弱/
+  失血/非经常/体外/摊薄）与 `_pattern_summary()` 的组合定性句。
+- `screen/render.py`：新增 `_bargain_verdict()`、`_structure_line()`（货款占用 + 销售端一行）、
+  `_margin_chart` 的 `［未改善］` 徽标与判定行、检查表的分组行/折叠行/组合定性框。
+- `templates/report.html`：`.status.watch`、`.status.na`、`tr.group-row td`、`tr.fold-row td`。
+
+#### 修改
+
+- `screen/score.py`：`_risk_checks()` 由 10 项重写为 **14 项 / 4 组**，签名改为
+  `add(key, group, name, status, detail, severity, tag)`；状态词汇由 `hit/clear/unknown`
+  扩为 `hit/watch/clear/unknown/na`。
+- `screen/score.py`：`_moat()` 由 5 项加权评分改为**三条证据**（定价权 / 资本回报 / 现金创造），
+  返回 `{level, evidence[], reasons, met, total}`；3 条 → 宽、2 条 → 窄、≤1 条 → 无明显。
+- `screen/score.py`：`BUY_CRITICAL_CHECKS` 由 `(cfo_ni, leverage, goodwill, nonrecurring, liquidity)`
+  改为 `(cash_flow, leverage, goodwill, nonrecurring, cash_debt)`；`_fatal()` 四条不变。
+- `screen/score.py`：`_data_quality()` 增加 `risk_na`，`risk_known` 不计 `na`；
+  `data["risks"]` 增加 `watches / clears / headline / summary`。
+- `screen/render.py`：第一节年报表由 8 列增至 10 列（有息负债、在建工程/固资），护城河块改为
+  `三条证据 x/3` + ✅/❌ 列表并删掉量化评分；第二节改为按组渲染、通过项折叠。
+- `screen/validate.py`：检查项数改为读 `config.RISK_CHECK_COUNT`。
+- 测试：`tests/support.py` 夹具补全新字段与 `margin_data()`；`test_risk_decision.py` 按新契约重写；
+  测试总数 303 → **355**（全部通过）。
+
+#### 删除
+
+- 「少数股东占比 >30%」检查（手册无此条，与净利润口径重复，4 只样本无一触发），
+  同时删掉 METHODOLOGY §2 的少数股东占比公式。
+- 护城河 0~100 量化评分及报告中的「量化评分」一行。
+- 死常量 `SHARE_DILUTION_MAX / CURRENT_RATIO_MIN / QUICK_RATIO_MIN /
+  REVENUE_GROWTH_NEGATIVE / AR_INV_GROWTH_ALERT`；`AR_INV_BASE_RATIO_MIN` 更名为
+  `AR_BASE_RATIO_MIN`（0.8.0 起它只服务于应收，存货用 `INV_MATERIAL_RATIO=1%`）。
+
+#### 修复
+
+- **600519 应收增速差误报 +2580pct**：`_ar_total()` 把 `ReceivablesFin`（应收款项融资，
+  票据结算）并进应收增速差；改为增速差只用 `BillAccReceivable`，占款比仍用两者之和。
+- **300058 存货 "+113%" 噪音**：存货占营收仅 0.02%，加 1% 小基数门槛后判 `unknown`。
+- **600036 把银行当工商企业算**：有息负债 88,814 亿、在建工程、现金短债比全部显示；
+  新增 `FINANCIAL_INAPPLICABLE_CHECKS` 5 项标 `na`，年报表对应单元格显示"—"。
+- **金融股杠杆数量级误导**：`leverage` 落在 `unknown` 时 detail 不再摆"有息负债 88,814 亿 →…"，
+  改为"金融股不适用本口径（有息负债含同业负债，EBIT 不可比）"。
+- **"FCF 0 年中 0 年为负"这种空话**：无可用 FCF 年度时改为"FCF 无可用年度（口径不适用）"。
+- **第四节把 `na` 当已知**：`risk_known = 总数 − 数据不足` 把 5 项不适用也算成已知，招商银行显示
+  "风险检查 11/14 已知"，与第二节的 "6/9" 打架；报告第四节与 CLI 摘要的分母都改为「适用项」
+  （`总数 − na`）。
+- **在建工程 detail 只说"同期有息负债未增"**：读者看不出结论，改为直接写
+  "自有资金扩产（同期有息负债未增）" / "借钱扩产（同期有息负债增加）"，tag 仍用于组合定性。
+- 毛利率环比按列表位置取 `[-2]/[-5]` 会拿错报告期（只保留 6 个季度时），改按季度索引定位。
+- `_structure()` 里 `reversed(annual)[-years:]` 不可下标（`TypeError`）、`annual` 为空时
+  `ys[-4]` 越界（`IndexError`）。
+
+#### 影响（口径变化，必须知道）
+
+- **第二节结论的构成变了**：一票否决位（现金流质量、现金短债比）命中只在组合定性句里点名，
+  **不新增 `_fatal()` 条件**；致命项仍是净资产为负、利息保障 <1、商誉 >50%、
+  连续 3 年 OCF 为负且净负债/EBIT >4 四条。
+- **Q 分与 V 分权重未动**：护城河评分本来就不进 Q，删除后 Q 分不变（600519 Q=89.0）。
+- **4 只样本的验收结果**（2025 年报口径，与《建议》§5 逐条对上）：
+
+  | 样本 | 护城河 | 命中 / 提示 / 不足 / 不适用 | 结论 |
+  |---|:--:|:--:|---|
+  | 600519 | 3/3 宽 | 0 / 1 / 1 / 0 | 唯一提示是 ①"未改善（缺 C3）"（89.64% vs 上年同季 91.28%） |
+  | 000725 | 1/3 无 | 1 / 3 / 0 / 0 | 杠杆 8.39 命中；在建"自有资金扩产"、存货增速差 +15.9pct 提示 |
+  | 300058 | 0/3 无 | 1 / 4 / 2 / 0 | 每股口径命中（股本 +44.1%、每股 OCF −59.4%），存货未误报 |
+  | 600036 | 不适用 | 0 / 0 / 3 / 5 | 5 项 `na`、3 项 `unknown`，结论"金融股不适用" |
+
+- **② 合同负债的口径**是 `ContractLiability + AdvancePayment`（预收款项与合同负债同一经济含义，
+  000725 的预收还有 8.11 亿），所以同比与只算合同负债的旧数不同（000725 +11.6% vs +6.7%）。
+- 文档同步：`README.md`（输出结构、小基数保护、测试清单）、`METHODOLOGY.md`（§2 指标字典、
+  新增护城河三证据、§4 改写为 14 项 4 组、§7 关键检查名单）、`config.py` 注释。
+
+---
+
+## 2026-11-10 13:28 +08:00
+
+### 修改（估值口径统一为「口径日收盘」，v0.7.10 → 0.7.11）
+
+**背景**：走势图上标「最新 2026-11-09：21.99」，上方分位表却显示「当前 21.95」——
+表用行情实时 PE/PB，图用估值序列（周频收盘），读者对不上。按确认结论改为
+**全篇估值只用收盘口径**，牺牲一点时效性换一致性。
+
+- `screen/compute.py`：`_valuation()` 的当前值改为取**序列最后一点**
+  （`ordered[-1]` 的 PE_TTM / PB_MRQ / PS_TTM），不再读 `quote["pe_ratio"] / pb_ratio`；
+  最后一点缺失或为负时退到最后一个有效值。签名去掉已无用的 `quote` 参数。
+- `screen/compute.py`：新增 `_close_price()`，取「口径日」（序列最后交易日）的收盘价：
+  1. 行情日期 == 口径日 → 行情价（盘后运行，价即时收盘）；
+  2. 否则用 `prev_close`（盘中运行时它就是上一交易日收盘）；
+  3. 再否则 `PE(TTM) × EPS(TTM)` 反推（与图上那条线同源）；
+  4. 兜底实时价。反推值与 `prev_close` 相差 >5% 时以反推值为准（除权/序列错位）。
+  返回 (价格, 口径说明)，说明直接写进报告头。
+- `screen/compute.py`：`market_cap_yi()` 增加 `price` 参数，传入时按该价重算市值；
+  不传时保持原逻辑（单位校准 + 实时价）。
+- `screen/compute.py`：`meta` 新增 `price_basis`（如「2026-11-09 收盘」）、
+  `price_date`（口径日）、`live_price`（实时价，仅留档）；`meta.price` 改为收盘价；
+  `meta.pe/pb/ps` 改为估值序列口径（与分位表一致），不再混用实时 PE/PB。
+- `screen/render.py`：报告头改为「¥ 1,444.99 市值 18,063.55 亿元 · 2026-11-09 收盘」，
+  下一行「估值口径 2026-11-09 收盘 · 数据快照 2026-11-10 · 最新报告期 2026-09-30」；
+  分位表表头「当前」→「最新收盘」；第三节增加一句「全篇估值口径统一为 X 收盘」，
+  说明表、图、目标价空间、现金底线市值用的是同一个价。
+
+### 影响
+
+- 目标价空间、预测 PE 相对当前 PE、现金底线的总市值/安全边际、V 分，都改为按收盘价计算：
+  600519 实测收盘 1,444.99（实时 1,441.35，差 +0.25%），V 62.2 → 62.1，其余结论不变。
+- 盘中运行时会比行情软件慢一个交易日，这是刻意取舍；报告头两行写明了口径日与快照日。
+- 分位百分比会跟着当前值微调（21.95 → 21.99 时 PE 分位 17.8% → 18.2%）。
+
+### 新增（回归测试）
+
+- `tests/test_compute.py`：`ClosingBasisTest` 9 个用例——当前值忽略实时报价、
+  分位按收盘算、`_close_price` 四条取价路径（同日/prev_close/反推/兜底）、
+  反推与 prev_close 差 5% 时改信反推、`market_cap_yi` 按收盘价重算。
+- `tests/test_render.py`：表头「最新收盘」与口径日说明 1 个用例；
+  头部测试改为断言「收盘价 + 市值 + 口径日」而非写死的实时价。
+
+### 修改（文档）
+
+- `METHODOLOGY.md`：分位小节改为「当前值 = 序列最后一点」；新增
+  「全篇统一的估值口径日」小节（口径日定义、取价优先级、报告头写法）；
+  §8 限制第 11 条改写为「盘中运行比实时价滞后一个交易日，是刻意取舍」；版本号 0.7.11。
+- `README.md`：重要边界新增第 15 条（收盘口径 + 代价 + 报告头写法）。
+- 全部 303 个用例通过。
+
+---
+
+## 2026-11-10 12:58 +08:00
+
+### 修复（核查第一轮：取数与口径，影响评级结论）
+
+- `screen/compute.py`：**年度资本开支取错了行，FCF 系统性虚高**。
+  东财 `RPT_F10_FINANCE_GCASHFLOW` 的 `CONSTRUCT_LONG_ASSET` 是「年初至今累计」，
+  同一年 03-31 → 12-31 递增；原代码按年份做 `capex[year] = v` 覆盖写，
+  而接口按日期**降序**返回，结果每年都停在 **Q1 累计值**上。
+  修复：只认 `REPORT_DATE` 以 `-12-31` 结尾的年报行；该年没有年报行时 FCF 记为未知。
+  - 实测（东财对照）：600519 2025 年 capex 应为 31.28 亿，原代码取 9.01 亿，
+    FCF 从 583.95 亿虚报到 606.21 亿；五年累计虚报 80~140 亿。
+  - 重资产股更严重：000725 2025 年 capex 400.9 亿被取成 90.5 亿，
+    FCF 87.3 亿虚报为 397.8 亿（**4.5 倍**），2021~2024 年同样虚报 230~310 亿。
+  - 影响：第一节「五年经营轨迹」FCF / FCF/营收、护城河结论里的
+    「5 年 FCF/营收中位数」、Q 分「现金创造力」组、风险检查 2「FCF 持续性」。
+    600519 的 Q 由 89.1 → 89.0（几乎不变），重资产股会明显下修。
+- `screen/score.py`：风险检查 6「应收/存货背离」在应收与存货科目**都缺失**时
+  （银行、保险）原判 `clear`（通过），改为 `unknown`。之前银行会被误判为“通过”。
+- `screen/score.py`：机构预期增速的兜底 CAGR 起点取错年份。
+  `financials.annual` 是**降序**（最新在前），原代码取 `annual[-1]`（最早一年），
+  年限被拉长、基数换成了更小的旧值，成长股增速被**高估**
+  （示例：2025 年 80 亿 → 2028 年 100 亿，正确 7.72%，原代码按 2023 年 60 亿算成 10.76%）；
+  改为 `annual[0]`。同时「最近年报亏损」的判断也随之回到最新一年。
+  仅影响「预测行没有 netProfitYoy」时的兜底路径，600519 这类有 yoy 的不受影响。
+
+### 新增（第一轮回归测试）
+
+- `tests/test_compute.py`：
+  - `test_capex_takes_annual_row_not_q1_of_same_year`：同年 Q1/Q3 行不得覆盖 12-31 行。
+  - `test_year_without_annual_capex_row_stays_none`：只有季报行时 FCF 必须是未知。
+- `tests/test_risk_decision.py`：
+  - `test_unknown_when_both_ar_and_inventory_missing`：科目缺失不得判通过。
+  - `ForecastGrowthBaseTest` 两个用例：兜底 CAGR 从最近年报起算、
+    最近年报亏损时不得用早年利润算增速。
+
+### 修复（第二轮：口径与健壮性，按确认结论实施）
+
+- `screen/score.py` + `config.py`：新增**金融股不打分**通道。行业名命中
+  `config.FINANCIAL_INDUSTRY_KEYWORDS`（银行/保险/证券）时，Q 与 V 都置为
+  `not_applicable`，等级显示「金融股不适用」，决策输出「金融股不适用，不做初筛」；
+  `screen/validate.py` 相应允许 Q 为 `None`（原会直接抛「质量分无法计算」）。
+  - 原因：银行没有毛利率、FCF、应收/存货、净有息负债这些科目，硬算只会得到一堆 0 分，
+    再匹配出一条“回避”结论，等于用错误的尺子量。
+  - 影响：银行/保险/券商不再输出 30~40 分的假 Q 分，也不进买入矩阵。
+- `screen/score.py` + `config.py`：风险检查 6「应收/存货背离」加**小基数门槛**
+  `AR_INV_BASE_RATIO_MIN = 0.005`。应收或存货占营业收入不足 0.5% 时不计增速
+  （几百万的波动就能造出几百个百分点），两项都被跳过时判 `unknown`
+  （“应收与存货无可比基数”）而不是 `clear`。
+  - 影响：绝对额极小的公司不再被误报“背离”，但也不会因为跳过而白拿一个“通过”。
+- `screen/compute.py`：新增 `_first_num()`，替换 5 处 `num(a) or num(b)` 写法
+  （营业收入、归母净利、经营现金流、EBIT、ROE）。`or` 会把合法的 0 当成缺失，
+  例如归母净利恰为 0 时会错误回退到 TTM 口径，ROE 为 0 时会回退到摊薄值。
+- `screen/compute.py`：删除 `meta.latest_revenue / latest_net_profit / latest_ocf /
+  latest_fcf` 四个从未被渲染的字段，以及只用于给它们赋值的局部变量。
+- `screen/render.py`：第三节分位文案改为按**序列真实起始年份**表述
+  （「上表为 2018 年以来周频分位」），无样本时回退「全部可用历史（周频）」。
+  原先写死“全部可用历史”，对 2021 年上市的新股会和读者理解不一致；
+  而写死 2018 又会冤枉新股，所以取 `valuation.sample.start` 的年份。
+- `screen/render.py`：第四节补金融股空态。Q/V 为 `None` 时原来会渲染出两张**空表格**
+  和一句“Q 数据覆盖 0.0% / 可买还需满足 Q 覆盖≥80%”，与“不做初筛”自相矛盾。
+  现在两张表各出一行 `colspan=3` 的说明（“金融股不适用：……不套用五维口径”），
+  数据完整度一行只保留风险检查与机构覆盖，决策规则矩阵整块换成一句“不进入买入门槛矩阵”。
+  同时删掉 `_section_score` 里从未使用的 `key` 局部变量。
+- `stock_report.py`：单股模式的控制台摘要 `f"{data['quality']['score']:.1f}"` 在金融股上
+  直接抛 `TypeError: unsupported format string passed to NoneType.__format__`（退出码 3，
+  但 HTML 已落盘）。抽出 `_score_line()`，`None` 时显示「不适用」（V 缺失但非金融股仍显示「—」），
+  并在输出里去掉多余的 `/ 100`。
+
+### 新增（第二轮回归测试）
+
+- `tests/test_quality.py`：`FinancialStockTest` 4 个用例——Q/V 均不适用、
+  决策文案为“不做初筛”、`validate` 不抛错、非金融行业不受影响。
+- `tests/test_risk_decision.py`：小基数 3 个用例（单项极小时忽略、两项都极小时 unknown、
+  科目都缺失时 unknown）+ `ForecastGrowthBaseTest` 2 个用例。
+- `tests/test_render.py`：分位起始年份 2 个用例（有样本用真实年份、无样本回退全历史）；
+  金融股空态 1 个用例（两张表各一行 `colspan=3`、不出现“可买还需满足/Q 数据覆盖”）。
+- `tests/test_cli.py`：`ScoreLineTest` 3 个用例（正常分数、金融股不适用、V 缺失显示 —）。
+
+### 修改（文档）
+
+- `METHODOLOGY.md`：
+  - 单位一节补充「东财资本支出是年初至今累计，只取 12-31 行」；指标表 FCF 公式标注两个输入都取 12-31。
+  - §3 质量分 Q 增加「金融股不做 Q/V 打分」的说明（含触发关键词与决策文案）。
+  - §4 风险检查表补充第 6 项的小基数保护（<0.5% 营收不计增速，双项跳过判 unknown）。
+  - §7 结论规则补充「金融股不进入决策矩阵」；§8 限制第 4 条改为“识别到金融行业直接标不适用”。
+  - 版本号同步 `0.7.10`。
+- `README.md`：
+  - 8 类数据表第 8 行、重要边界第 6 条补充资本支出口径说明。
+  - 评分口径一节 Q 表下增加「金融股不打分」提示框；重要边界第 4 条改写，
+    新增第 14 条写小基数保护。
+
+### 影响（本轮合计）
+
+- FCF 及其派生指标回到与年报一致的量级；重资产、高扩张行业的 Q 分与护城河等级会明显下修，
+  消费/轻资产公司变化很小。
+- 风险检查的“已知项数”会因银行股多 1 项 unknown 而下降（10/10 → 9/10 之类），
+  从而更不容易给出“可买”。
+- 金融股从“给低分 + 回避”改成“不适用、不下结论”，避免用工业/消费的尺子量银行；
+  报告第四节不再出现空表格和“Q 覆盖 0.0%”这类自相矛盾的提示。
+- 全部 293 个用例通过。
+
+---
+
+## 2026-11-10 12:34 +08:00
+
+### 修改
+
+- `config.py`：`TREND_QUARTERS = 15` 改为
+  `TREND_YEARS = 5` + `TREND_QUARTERS = TREND_YEARS * 4`（= 20），
+  利润率曲线的窗口从「15 个季度」变成「5 年（20 个季度）」。
+- `screen/render.py`：第一节的利润率标题由「近 15 个季度利润率趋势」改为
+  「近 5 年季度毛利率/净利率趋势」（标题、空态标题、`aria-label` 三处统一用
+  `config.TREND_YEARS` 拼接，不再写死数字）。
+  图下注释在季度不足时的措辞由「少于 15 个季度」改为
+  「不足 5 年（需 20 个季度，已展示全部可用季度）」。
+- `README.md`：输出结构第一节、8 类数据表第 3 行、重要边界第 7 条同步为「近 5 年 / 20 个季度」。
+- `METHODOLOGY.md`：§1 小节标题与说明改为「近 5 年季度毛利率/净利率曲线」，
+  写明取 `data_finance(num=20)` 的 20 个报告期、不足 20 个时展示全部；§8 限制第 7 条同步。
+
+  > 数据侧不改：`data_finance` 本来就取 20 个报告期，正好等于 5 年 × 4 个季度，
+  > 所以这次只是把「只看 15 个」的截断去掉，没有增加请求。
+
+### 新增
+
+- `tests/test_compute.py::MarginTrendTest`：窗口改为 20 个季度（8 年数据只留最近 20 个），
+  新增「历史不足 20 个季度时全量展示」用例。
+- `tests/test_render.py`：新增 4 个用例 —— 空态带新标题、满 20 个季度不写「不足」、
+  6 个季度时写「不足 5 年」、`aria-label` 用 `TREND_YEARS`。
+- `tests/test_smoke.py`：`test_margin_chart_labels_all_quarters_in_five_years`
+  改为 20 个季度、20 个刻度标签。
+
+### 影响
+
+- 第一节的利润率曲线从 15 个季度（≈3.75 年）扩到 20 个季度（5 年）。
+  600519 实测由「23Q1–26Q3，共 15 个季度」变为「21Q4–26Q3，共 20 个季度」，
+  时间轴 20 个刻度全部标出（10px 字号，620px 绘图区，间距 32.6px 不重叠）。
+- 新股 / 停牌股只有几个季度时，图照常画，但会注明「不足 5 年（需 20 个季度）」。
+- 曲线仍只作展示：不进入 Q/V、风险检查或决策矩阵，Q/V 与结论不受影响。
+- 全部 276 个用例通过。
+
+---
+
+## 2026-11-10 12:24 +08:00
+
+### 修改
+
+- `config.py`：新增 `VALUATION_YEARS = 10`；`TREND_QUARTERS = 15` 的注释改为只描述利润率曲线，
+  两个窗口从此各管一段，不再共用一个起点。
+- `screen/compute.py`：
+  - 新增 `_years_before(iso, years)`：把 ISO 日期往前推 N 年，2 月 29 日回退到 2 月 28 日，
+    空值/非法日期返回空串（等价于不截断）。
+  - `_valuation()` 的 `chart_start` 参数改为 `years`（默认 `config.VALUATION_YEARS`），
+    窗口从**最后一条可用数据**往前推 10 年，而不是从「最近 15 个报告季度的起点」切。
+  - `_valuation_chart()` 新增 `years` 参数与 `years / span_years / limited` 三个返回值：
+    `span_years` 为窗口内实际覆盖年数，`limited` 表示可用历史不足目标年数。
+  - `build_report_data()` 不再从 `margin_trend.start` 取起点传给估值图。
+- `screen/render.py`：
+  - 第三节说明文字由「下图为近 15 个季度周频走势」改为
+    「下图为近 10 年周频走势（可用历史不足 10 年时按全部可用历史）」。
+  - 三张图的 `aria-label` 改为「近 10 年 PE(TTM)/PB(MRQ)/PS(TTM) 周频走势」。
+  - 图下注释改为「数据范围：起 至 止（近 10 年周频，共 N 个周度点）」；
+    历史不足 10 年时显示「可用历史约 N 年，已全部展示」（不足 1 年单独措辞）。
+  - 空态文字由「暂无近 15 个季度估值数据」改为「暂无估值序列数据」。
+
+### 新增
+
+- `tests/test_compute.py::ValuationChartWindowTest`：6 个用例，覆盖
+  10 年窗口起点（含截止日当天）、分位与样本仍用全历史、历史不足 10 年
+  （`limited=True`）、`years=0` 关闭窗口、`_years_before` 的闰日/空值/非法输入、
+  空序列的窗口元数据。
+- `tests/test_render.py`：新增第三节文案断言、图下注释两种措辞断言、`aria-label` 断言。
+
+### 修改（测试）
+
+- `tests/test_compute.py`：`test_chart_window_and_negative_band` 改为
+  `test_chart_keeps_all_weeks_when_window_off`（`years=0`），不再依赖 `chart_start`。
+- `tests/test_smoke.py`：端到端断言由「不得出现近 15 个季度估值走势」升级为
+  正面校验「下图为近 10 年周频走势」，并保留旧文案的排除断言。
+- `tests/test_render.py`：空态断言同步新文案。
+
+### 影响
+
+- 估值走势图从约 15 个季度（≈196 个周度点）扩展为近 10 年
+  （600519 实测 2018-01-05～2026-11-09，454 个周度点）。
+- 东财 `RPT_VALUEANALYSIS_DET` 一般只回溯到 2018 年，所以多数个股实际是
+  「8~9 年」；报告会明确写出「可用历史约 8.8 年，已全部展示」，不会假装有 10 年。
+- 分位表、V 分、决策矩阵不变：分位仍按全部可用历史计算，走势图仍只是展示。
+- 行情/估值取数不变（本来就拉全量再压缩周频），无额外请求、无额外耗时。
+- 全部 272 个用例通过。
+
+---
+
+## 2026-11-10 12:09 +08:00
+
+### 删除
+
+- `screen/compute.py`：整段删除 `_dcf()`（39 行）及 `build_report_data()` 返回值里的
+  `"dcf"` 键；同时删除只服务于 DCF 脚注的 `fcf_yield` 计算与
+  `meta["fcf_yield"]` 字段。
+- `screen/render.py`：第三节删除 `<h3>对企业进行 DCF 估值</h3>` 整块，包括
+  「FCF0 / g1 / 折现率 / 合理价 / 相对现价」五行表格和
+  「FCF 收益率 / 要求收益率」脚注；页脚 `method`、`limits` 两段同步去掉 DCF 措辞
+  （`FCF/DCF` → `FCF`）。
+- `screen/score.py`：第五节跟踪表删除「DCF 折价」一行，跟踪项由 8 行降为 7 行。
+- `config.py`：删除 `DCF_G`、`DCF_YEARS`、`REQUIRED_FCF_YIELD` 三个参数。
+  `WACC` 保留，仍用于 ROIC−WACC 与护城河判断。
+- `METHODOLOGY.md`：删除「#### FCF 收益率」「#### DCF」两节口径推导，
+  §8 已知限制第 1 条改为只说明 WACC 用途。
+
+### 新增
+
+- `tests/`：为整个工具补充测试，覆盖 262 个用例。
+  - `tests/support.py`：共用夹具（`raw_bundle` / `report_data` / `scored_data`、
+    `annual_rows`、CSV 读写助手）。
+  - `tests/test_util.py`、`test_fetch.py`、`test_compute.py`、`test_quality.py`、
+    `test_risk_decision.py`、`test_render.py`、`test_io.py`、`test_cli.py`：
+    分别覆盖数值清洗、取数与重试、报表整理与分位、Q 分 5 组 14 项、10 项风险
+    与决策矩阵、五节渲染与图表断线、CSV/XLSX/导航页、参数与退出码。
+- `tests/test_compute.py::DcfRemovedTest`：DCF 下线的回归守卫，断言
+  `_dcf` 不存在、`build_report_data` 无 `"dcf"` 键、`meta` 无 `fcf_yield`、
+  `config` 无 `DCF_*` / `REQUIRED_FCF_YIELD`、源码内不出现 `dcf`。
+- `tests/test_render.py::test_dcf_section_removed`：即使传入残留 `dcf` 数据也不渲染。
+
+### 修改
+
+- `config.py`：`VERSION` 由 `0.7.6` 升至 `0.7.7`。
+- `METHODOLOGY.md`：版本号同步为 `0.7.7`；§1「质量、风险、FCF、DCF 都使用年报」
+  改为「质量、风险、FCF 都使用年报」；§5 引言补一句 DCF 已整体下线。
+- `README.md`：输出结构第三节去掉「对企业进行 DCF 估值」；目录表两行去掉 DCF；
+  重要边界第 3、4 条去掉 DCF；测试目录补齐 8 个测试文件与 `support.py`。
+- `tests/test_render.py`：页脚断言改用 `config.VERSION`，不再硬编码版本号。
+- `screen/compute.py`：`from screen.util import cagr, num, year_of` 去掉 `cagr`，
+  DCF 是它唯一的使用者。
+- `screen/score.py`：删除未被使用的 `import math`。
+
+### 影响
+
+- 生成的 HTML 少一节、少 5 行表格与 1 行跟踪项；第三展现为
+  「历史分位 → 机构预期 → 现金扣除与底线估值」三段。
+- 估值分 V 不受影响（DCF 早已不进入 V），Q 分、风险检查、决策矩阵不变。
+- 报告体积略降；`fcf_yield` 字段不再出现在数据里，外部脚本若读取需改。
+- 全部 262 个用例通过；夹具实跑确认 HTML 中 `DCF`、`FCF 收益率` 出现次数均为 0。
+
+---
+
 ## 2026-11-09 10:10 +08:00
 
 ### 修复

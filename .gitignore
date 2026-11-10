@@ -27,13 +27,13 @@ Thumbs.db
 *.swp
 *.swo
 
-# 本工具生成的 HTML 报告
-# 模板必须保留；示例报告属于本地生成物，不上传
+# 本工具生成的 HTML 报告 / 结果 Excel
+# 模板必须保留；示例报告与批量结果属于本地生成物，不上传
 *.html
 !templates/report.html
 /examples/
 /html-report/
-/csv-input/
+/xlsx-output/
 
 # 输出目录 / 临时文件 / 本地原始数据
 /out/

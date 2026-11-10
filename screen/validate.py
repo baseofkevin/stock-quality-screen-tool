@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import config
+
 
 class ScreenError(RuntimeError):
     pass
@@ -25,15 +27,15 @@ def validate(data: dict[str, Any]) -> None:
         raise ScreenError("没有可用年报，无法计算质量分")
     q = data.get("quality") or {}
     v = data.get("valuation_score") or {}
-    if q.get("score") is None:
+    if q.get("score") is None and not q.get("not_applicable"):
         raise ScreenError("质量分无法计算")
     # 估值分允许为空：无机构覆盖或缺少估值/增速时，报告应显示“数据不足”，而不是直接失败。
     for label, value in (("质量分", q.get("score")), ("估值分", v.get("score"))):
         if not _finite(value):
             raise ScreenError(f"{label}不是有效数字")
     checks = data.get("risks", {}).get("checks") or []
-    if len(checks) != 10:
-        raise ScreenError(f"风险检查应为 10 项，实际 {len(checks)} 项")
+    if len(checks) != config.RISK_CHECK_COUNT:
+        raise ScreenError(f"风险检查应为 {config.RISK_CHECK_COUNT} 项，实际 {len(checks)} 项")
     if not data.get("decision", {}).get("label"):
         raise ScreenError("缺少决策结论")
     if not data.get("data_quality"):

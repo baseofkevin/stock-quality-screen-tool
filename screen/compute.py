@@ -6,7 +6,7 @@ from datetime import date
 from typing import Any
 
 import config
-from screen.util import cagr, num, year_of
+from screen.util import num, year_of
 
 ANNUAL_SUFFIX = "-12-31"
 
@@ -79,6 +79,18 @@ def _date(row: dict[str, Any]) -> str:
     return raw[:10] if len(raw) >= 10 else ""
 
 
+def _first_num(*values: Any) -> float | None:
+    """按顺序取第一个能解析成数值的字段。
+
+    不能用 `num(a) or num(b)`：那样会把合法的 0 当成缺失（归母净利恰为 0 时会误用 TTM）。
+    """
+    for value in values:
+        v = num(value)
+        if v is not None:
+            return v
+    return None
+
+
 def _annual_dates(dates: list[str]) -> list[str]:
     return sorted([d for d in dates if d.endswith(ANNUAL_SUFFIX)], reverse=True)
 
@@ -113,6 +125,7 @@ def _margin_trend(merged: dict[str, dict[str, dict[str, Any]]],
         points.append({
             "date": d,
             "label": _quarter_label(d),
+            "revenue": revenue,
             "gross": gross,
             "net": net,
         })
@@ -129,13 +142,11 @@ def _period_record(d: str, parts: dict[str, dict[str, Any]], capex: dict[int, fl
     bal = parts.get("balance", {})
     cf = parts.get("cashflow", {})
     y = year_of(d)
-    revenue = num(inc.get("OperatingRevenue")) or num(inc.get("TotalOperatingRevenue"))
-    parent_np = num(inc.get("NPParentCompanyOwners")) or num(inc.get("NPParentCompanyOwnersTTM"))
+    revenue = _first_num(inc.get("OperatingRevenue"), inc.get("TotalOperatingRevenue"))
+    parent_np = _first_num(inc.get("NPParentCompanyOwners"), inc.get("NPParentCompanyOwnersTTM"))
     net_margin = num(inc.get("NetProfitRatio"))
     total_np = (revenue * net_margin / 100.0) if revenue is not None and net_margin is not None else None
-    ocf = num(cf.get("NetOperateCashFlow"))
-    if ocf is None:
-        ocf = num(cf.get("NetOperateCashFlowTTM"))
+    ocf = _first_num(cf.get("NetOperateCashFlow"), cf.get("NetOperateCashFlowTTM"))
     cx = capex.get(y) if y is not None else None
     fcf = (ocf - cx) if (ocf is not None and cx is not None) else None
     equity = num(bal.get("SEWithoutMI"))
@@ -146,7 +157,7 @@ def _period_record(d: str, parts: dict[str, dict[str, Any]], capex: dict[int, fl
     goodwill_imputed = bool(bal) and "GoodWill" not in bal
     if goodwill is None and goodwill_imputed:
         goodwill = 0.0
-    ebit = num(bal.get("EBIT")) or num(inc.get("EBIT"))
+    ebit = _first_num(bal.get("EBIT"), inc.get("EBIT"))
     fin_exp = num(inc.get("FinancialExpense"))
     shares = num(bal.get("PaidInCapital"))
     return {
@@ -158,10 +169,13 @@ def _period_record(d: str, parts: dict[str, dict[str, Any]], capex: dict[int, fl
         "deducted": num(inc.get("NPDeductNonRecurringPL")),
         "gross_margin": num(inc.get("GrossIncomeRatio")),
         "net_margin": net_margin,
-        "roe": num(inc.get("ROEWeighted")) or num(inc.get("ROE")),
+        "roe": _first_num(inc.get("ROEWeighted"), inc.get("ROE")),
         "roa": num(inc.get("ROA")),
         "roic": num(inc.get("ROIC")),
         "ocf": ocf,
+        "ocf_ttm": num(cf.get("NetOperateCashFlowTTM")),
+        "icf": num(cf.get("NetInvestCashFlow")),
+        "fcf_fin": num(cf.get("NetFinanceCashFlow")),
         "capex": cx,
         "fcf": fcf,
         "fcf_margin": (fcf / revenue) if (fcf is not None and revenue) else None,
@@ -174,11 +188,67 @@ def _period_record(d: str, parts: dict[str, dict[str, Any]], capex: dict[int, fl
         "goodwill_imputed": goodwill_imputed,
         "current_ratio": num(bal.get("CurrentRatio")),
         "quick_ratio": num(bal.get("QuickRatio")),
+        "working_capital": num(bal.get("WorkingCapital")),
         "ebit": ebit,
         "finance_expense": fin_exp,
         "shares": shares,
         "ar": num(bal.get("BillAccReceivable")),
+        # 应收票据在部分公司（如茅台）走「应收款项融资」，单看 BillAccReceivable 会算成零应收。
+        "receivable_fin": num(bal.get("ReceivablesFin")),
         "inventory": num(bal.get("Inventories")),
+        "payable": num(bal.get("NotAccountsPayable")),
+        "other_ar": num(bal.get("OtherReceivableED")),
+        "other_ap": num(bal.get("OtherPayableED")),
+        "contract_liability": num(bal.get("ContractLiability")),
+        "advance_payment": num(bal.get("AdvancePayment")),
+        "short_loan": num(bal.get("ShortTermLoan")),
+        "ncl_1y": num(bal.get("NonCurrentLiabilityIn1Year")),
+        "construction": num(bal.get("TConstruInProcess")),
+        "fixed_asset": num(bal.get("TotalFixedAsset")),
+        "sell_expense": num(inc.get("OperatingExpense")),
+        "admin_expense": num(inc.get("TotalAdminExpense")),
+        "rnd_expense": num(inc.get("RAndD")),
+        "np_ttm": num(inc.get("NPParentCompanyOwnersTTM")),
+    }
+
+
+def _structure(annual: list[dict[str, Any]], years: int = 5) -> dict[str, Any]:
+    """第一节用的结构指标（按年度升序），只做展示，不参与 Q/V 打分。
+
+    - 占款比 = 应付账款 ÷（应收 + 应收款项融资 + 存货）：>1 两头通吃，越小越是自己垫钱。
+      手册 6.4 写的是（应收+存货）÷ 应付，但对茅台这种存货是基酒的公司会得出 15 倍假信号，
+      所以反过来做分子分母。
+    - 合同负债/营收：销售端的预收议价能力，和占款比一起读才有意义。
+    - 在建工程/固定资产：连续上升 = 扩产期，2~3 年后折旧压利润。
+    """
+    rows: list[dict[str, Any]] = []
+    for rec in list(reversed(annual))[-years:]:
+        ar = (rec.get("ar") or 0.0) + (rec.get("receivable_fin") or 0.0)
+        inv = rec.get("inventory") or 0.0
+        ap = rec.get("payable")
+        revenue = rec.get("revenue")
+        cl = (rec.get("contract_liability") or 0.0) + (rec.get("advance_payment") or 0.0)
+        cip, fa = rec.get("construction"), rec.get("fixed_asset")
+        rows.append({
+            "year": rec.get("year"),
+            "bargain": (ap / (ar + inv)) if (ap is not None and (ar + inv) > 0) else None,
+            "payable": ap,
+            "ar_inv": (ar + inv) if (ar or inv) else None,
+            "contract_ratio": (cl / revenue * 100.0) if (revenue and cl) else None,
+            "contract": cl if cl else None,
+            "construction_ratio": (cip / fa * 100.0) if (cip is not None and fa) else None,
+            "debt": rec.get("debt"),
+        })
+    bargain = [r["bargain"] for r in rows if r["bargain"] is not None]
+    cl_ratios = [r["contract_ratio"] for r in rows if r["contract_ratio"] is not None]
+    cl_vals = [r["contract"] for r in rows if r["contract"] is not None]
+    return {
+        "rows": rows,
+        "bargain_latest": bargain[-1] if bargain else None,
+        "bargain_trend": (bargain[-1] - bargain[0]) if len(bargain) >= 2 else None,
+        "contract_latest": cl_ratios[-1] if cl_ratios else None,
+        "contract_yoy": ((cl_vals[-1] / cl_vals[-2] - 1) * 100.0
+                         if len(cl_vals) >= 2 and cl_vals[-2] else None),
     }
 
 
@@ -195,9 +265,13 @@ def build_financials(calls: list[dict[str, Any]], code: str) -> dict[str, Any]:
 
     capex: dict[int, float] = {}
     for row in _merge_rows(calls, "RPT_F10_FINANCE_GCASHFLOW"):
-        y = year_of(row.get("REPORT_DATE"))
+        d = str(row.get("REPORT_DATE") or "")[:10]
+        y = year_of(d)
         v = num(row.get("CONSTRUCT_LONG_ASSET"))
-        if y is not None and v is not None:
+        # 东财这个字段是「年初至今累计」：同一年的 03-31/06-30/09-30/12-31 是递增的。
+        # 只认 12-31 的年报行，否则降序遍历时会被同年 Q1 的数覆盖，把年度 capex 低估、
+        # FCF 虚高（600519：2025 年报 31.28 亿 vs Q1 9.01 亿）。
+        if y is not None and v is not None and d.endswith(ANNUAL_SUFFIX):
             capex[y] = v
 
     all_dates = sorted(merged, reverse=True)
@@ -228,6 +302,7 @@ def build_financials(calls: list[dict[str, Any]], code: str) -> dict[str, Any]:
         "latest": latest,
         "capex_years": sorted(capex),
         "margin_trend": _margin_trend(merged),
+        "structure": _structure(annual),
     }
 
 
@@ -243,11 +318,18 @@ def _profile(calls: list[dict[str, Any]], code: str) -> dict[str, Any]:
     return p if isinstance(p, dict) else {}
 
 
-def market_cap_yi(quote: dict[str, Any]) -> tuple[float | None, float | None]:
-    """返回 (亿元市值, 元市值)；接口单位可能是元/万元/亿元，用价格×股本校准。"""
+def market_cap_yi(quote: dict[str, Any],
+                  price: float | None = None) -> tuple[float | None, float | None]:
+    """返回 (亿元市值, 元市值)；接口单位可能是元/万元/亿元，用价格×股本校准。
+
+    `price` 传入时按该价重算（用于收盘口径），不再用接口那个实时市值。
+    """
+    shares = num(quote.get("total_shares"))
+    if price and price > 0 and shares:
+        yuan = price * shares
+        return (yuan / 1e8, yuan)
     raw = num(quote.get("total_market_cap"))
     price = num(quote.get("price"))
-    shares = num(quote.get("total_shares"))
     calc = (price * shares) if (price and shares) else None
     if raw is None:
         return (None, calc)
@@ -259,8 +341,57 @@ def market_cap_yi(quote: dict[str, Any]) -> tuple[float | None, float | None]:
     return (yuan / 1e8, yuan)
 
 
-def _valuation_chart(ordered: list[dict[str, Any]], start: str) -> dict[str, Any]:
-    """近若干季度的周频估值点；PE 为负时置空，并记录负值区间。"""
+def _close_price(valuation: dict[str, Any], quote: dict[str, Any],
+                 financials: dict[str, Any]) -> tuple[float | None, str]:
+    """取「估值口径日」（估值序列最后交易日）的收盘价，全篇估值统一用它。
+
+    优先级：
+      1. 行情日期 == 口径日 → 行情价就是那天收盘（盘后运行）；
+      2. 有 `prev_close` → 盘中运行时它就是上一交易日收盘，正好是口径日；
+      3. PE(TTM) × EPS(TTM) 反推（与图上那条线同源，可用 PB×BPS 交叉验证）；
+      4. 兜底用行情实时价。
+    返回 (价格, 口径说明)；说明会写进报告头，避免读者误以为这是实时价。
+    """
+    as_of = str((valuation.get("sample") or {}).get("end") or "")
+    quote_date = str(quote.get("time") or "")[:10]
+    live = num(quote.get("price"))
+    prev_close = num(quote.get("prev_close"))
+    pe = ((valuation.get("metrics") or {}).get("pe") or {}).get("current")
+    eps = (financials.get("latest") or {}).get("eps_ttm")
+    derived = (pe * eps) if (num(pe) and num(eps) and pe > 0 and eps > 0) else None
+
+    if as_of and quote_date and as_of == quote_date and live:
+        return live, f"{as_of} 收盘"
+    if prev_close and prev_close > 0:
+        # 反推值比 prev_close 差 5% 以上，通常是除权或序列错位；此时信任与图同源的反推值
+        if derived and abs(derived - prev_close) / prev_close > 0.05:
+            return derived, f"{as_of} 收盘（按 PE×EPS 反推）"
+        return prev_close, f"{as_of} 收盘"
+    if derived:
+        return derived, f"{as_of} 收盘（按 PE×EPS 反推）"
+    return live, "实时价"
+
+
+def _years_before(iso: str, years: int) -> str:
+    """把 ISO 日期往前推 N 年；解析失败返回空串（等于不截断）。"""
+    try:
+        d = date.fromisoformat(iso)
+    except (ValueError, TypeError):
+        return ""
+    try:
+        return d.replace(year=d.year - years).isoformat()
+    except ValueError:                       # 2 月 29 日 → 前推到 2 月 28 日
+        return d.replace(year=d.year - years, day=28).isoformat()
+
+
+def _valuation_chart(ordered: list[dict[str, Any]], start: str = "",
+                     years: int = 0) -> dict[str, Any]:
+    """最近 N 年的周频估值点；PE 为负时置空，并记录负值区间。
+
+    `ordered` 已是周频压缩后的序列。窗口从**最后一条可用数据**往前推 N 年，
+    而不是从今天往前推：停牌、退市前最后一周也不会把图拉空。
+    数据本身不足 N 年时，自然只画全部可用历史（`limited=True`）。
+    """
     points: list[dict[str, Any]] = []
     for row in ordered:
         d = str(row.get("TRADE_DATE") or "")[:10]
@@ -294,19 +425,37 @@ def _valuation_chart(ordered: list[dict[str, Any]], start: str) -> dict[str, Any
         value = points[-1].get(key) if points else None
         latest[key] = {"date": points[-1]["date"], "value": value} if value is not None else None
 
+    span_years = 0.0
+    if len(points) > 1:
+        try:
+            span_years = round(
+                (date.fromisoformat(points[-1]["date"])
+                 - date.fromisoformat(points[0]["date"])).days / 365.25, 2)
+        except ValueError:
+            span_years = 0.0
+
     return {
         "points": points,
         "start": points[0]["date"] if points else "",
         "end": points[-1]["date"] if points else "",
         "count": len(points),
+        "years": years,
+        "span_years": span_years,
+        # 截断后仍覆盖不到目标年数 → 说明该股可用历史本来就不够长
+        "limited": bool(years and span_years and span_years < years - 0.25),
         "negative_ranges": ranges,
         "latest": latest,
         "pe_negative_latest": bool(points and points[-1]["pe_negative"]),
     }
 
 
-def _valuation(calls: list[dict[str, Any]], quote: dict[str, Any],
-               chart_start: str = "") -> dict[str, Any]:
+def _valuation(calls: list[dict[str, Any]],
+               years: int = config.VALUATION_YEARS) -> dict[str, Any]:
+    """估值序列：分位（全历史）+ 走势图（近 N 年）。
+
+    所有“当前值”都取序列最后一点（最后交易日收盘），不接受行情实时值——
+    全篇估值口径统一到收盘，见 `_close_price()`。
+    """
     rows = _merge_rows(calls, "RPT_VALUEANALYSIS_DET")
     weekly: dict[tuple[int, int], dict[str, Any]] = {}
     for row in rows:
@@ -331,14 +480,19 @@ def _valuation(calls: list[dict[str, Any]], quote: dict[str, Any],
             "available": False,
             "chart": {
                 "points": [], "start": "", "end": "", "count": 0,
+                "years": years, "span_years": 0.0, "limited": False,
                 "negative_ranges": [], "latest": {}, "pe_negative_latest": False,
             },
         }
 
+    # 当前值取**序列最后一点**（= 最后一个交易日收盘），不用行情实时值。
+    # 否则分位表的「当前」和走势图上的「最新」会差一个交易日（实测 600519：
+    # 图 21.99 / 表 21.95），读者对不上。
+    last_row = ordered[-1] if ordered else {}
     current = {
-        "pe": num(quote.get("pe_ratio")),
-        "pb": num(quote.get("pb_ratio")),
-        "ps": series["ps"][-1] if series["ps"] else None,
+        "pe": num(last_row.get("PE_TTM")),
+        "pb": num(last_row.get("PB_MRQ")),
+        "ps": num(last_row.get("PS_TTM")),
     }
     labels = {"pe": "PE(TTM)", "pb": "PB", "ps": "PS(TTM)"}
     metrics: dict[str, dict[str, Any]] = {}
@@ -347,7 +501,7 @@ def _valuation(calls: list[dict[str, Any]], quote: dict[str, Any],
             continue
         cur = current.get(key)
         if cur is None or cur <= 0:
-            cur = values[-1]
+            cur = values[-1]        # 最后一点缺失或为负 → 退到最后一个有效值
         p = (sum(1 for v in values if v < cur) + 0.5 * sum(1 for v in values if v == cur)) / len(values) * 100.0
         metrics[key] = {
             "label": labels[key],
@@ -364,7 +518,12 @@ def _valuation(calls: list[dict[str, Any]], quote: dict[str, Any],
             "end": str(ordered[-1].get("TRADE_DATE") or "")[:10],
             "points": len(ordered),
         },
-        "chart": _valuation_chart(ordered, chart_start),
+        "chart": _valuation_chart(
+            ordered,
+            (_years_before(str(ordered[-1].get("TRADE_DATE") or "")[:10], years)
+             if years and years > 0 else ""),
+            years=years,
+        ),
         "available": bool(metrics),
     }
 
@@ -418,45 +577,6 @@ def _forecast(calls: list[dict[str, Any]], code: str) -> dict[str, Any]:
             "forecast_institutions": _as_int(rating.get("forecastInstitutions")) or 0,
         } if rating else {},
     }
-
-
-def _dcf(annual: list[dict[str, Any]], quote: dict[str, Any]) -> dict[str, Any]:
-    years = sorted([x for x in annual if x.get("year")], key=lambda x: x["year"])
-    if len(years) < 5:
-        return {"applicable": False, "reason": "年报不足 5 年"}
-    last = years[-1]
-    fcf0 = last.get("fcf")
-    if fcf0 is None or fcf0 <= 0:
-        return {"applicable": False, "reason": "最近年报 FCF 非正或缺失"}
-    first = years[-5]
-    g1 = cagr(first.get("revenue"), last.get("revenue"), last["year"] - first["year"])
-    if g1 is None:
-        g1 = 5.0
-    g1 = max(0.0, min(15.0, g1)) / 100.0
-    r = config.WACC / 100.0
-    g = config.DCF_G / 100.0
-    if r <= g:
-        return {"applicable": False, "reason": "折现率不高于永续增速"}
-    pv = 0.0
-    for i in range(1, config.DCF_YEARS + 1):
-        pv += fcf0 * (1 + g1) ** i / (1 + r) ** i
-    terminal = fcf0 * (1 + g1) ** config.DCF_YEARS * (1 + g) / (r - g) / (1 + r) ** config.DCF_YEARS
-    ev = pv + terminal
-    shares = num(quote.get("total_shares"))
-    price = num(quote.get("price"))
-    fair = (ev / shares) if shares else None
-    margin = ((fair / price - 1.0) * 100.0) if (fair and price and fair > 0) else None
-    return {
-        "applicable": True,
-        "fcf0_yi": fcf0 / 1e8,
-        "g1_pct": g1 * 100.0,
-        "wacc_pct": config.WACC,
-        "g_pct": config.DCF_G,
-        "fair_value": fair,
-        "margin_pct": margin,
-        "years": config.DCF_YEARS,
-    }
-
 
 
 def _cash_valuation(annual: list[dict[str, Any]],
@@ -598,21 +718,14 @@ def build_report_data(calls: list[dict[str, Any]], code: str) -> dict[str, Any]:
     financials = build_financials(calls, code)
     quote = _quote(calls, code)
     profile = _profile(calls, code)
-    cap_yi, cap_yuan = market_cap_yi(quote)
     annual = financials["annual"]
     latest = financials["latest"]
-    revenue = latest.get("revenue")
-    net_profit = latest.get("net_profit")
-    ocf = latest.get("ocf")
-    fcf = latest.get("fcf")
+    valuation = _valuation(calls)
+    # 全篇估值口径统一到「估值口径日」的收盘价，避免图表用收盘、表用实时。
+    price, price_basis = _close_price(valuation, quote, financials)
+    cap_yi, cap_yuan = market_cap_yi(quote, price=price)
 
     latest_year = annual[0]["year"] if annual else (latest.get("year"))
-    net_profit_year = annual[0].get("net_profit") if annual else net_profit
-    fcf_yield = None
-    if fcf is not None and cap_yuan:
-        fcf_yield = fcf / cap_yuan * 100.0
-
-    chart_start = (financials.get("margin_trend") or {}).get("start") or ""
 
     return {
         "meta": {
@@ -620,28 +733,26 @@ def build_report_data(calls: list[dict[str, Any]], code: str) -> dict[str, Any]:
             "name": str(profile.get("name") or quote.get("name") or code),
             "industry": str(profile.get("industry") or profile.get("sector") or "暂无披露"),
             "business": str(profile.get("business") or ""),
-            "price": num(quote.get("price")),
+            "price": price,
+            "price_basis": price_basis,
+            "price_date": str((valuation.get("sample") or {}).get("end") or ""),
+            "live_price": num(quote.get("price")),
             "market_cap_yi": cap_yi,
             "market_cap_yuan": cap_yuan,
             "quote_date": str(quote.get("time") or "")[:10],
             "report_year": latest_year,
             "latest_date": latest.get("date") or "",
-            "latest_revenue": revenue,
-            "latest_net_profit": net_profit,
-            "latest_ocf": ocf,
-            "latest_fcf": fcf,
             "annual_count": len(annual),
-            "fcf_yield": fcf_yield,
-            "pe": num(quote.get("pe_ratio")),
-            "pb": num(quote.get("pb_ratio")),
-            "ps": (num(quote.get("ps_ratio")) or None),
+            # 估值倍数也统一取序列最后一点（收盘口径），不再用行情实时 PE/PB
+            "pe": ((valuation.get("metrics") or {}).get("pe") or {}).get("current"),
+            "pb": ((valuation.get("metrics") or {}).get("pb") or {}).get("current"),
+            "ps": ((valuation.get("metrics") or {}).get("ps") or {}).get("current"),
         },
         "financials": financials,
         "profile": profile,
-        "valuation": _valuation(calls, quote, chart_start=chart_start),
+        "valuation": valuation,
         "forecast": _forecast(calls, code),
         "mainop": _mainop(calls, annual),
-        "dcf": _dcf(annual, quote),
         "cash_valuation": _cash_valuation(
             annual, latest, quote, cap_yuan,
             str(profile.get("industry") or profile.get("sector") or "")),

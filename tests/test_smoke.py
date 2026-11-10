@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import stock_report  # noqa: E402
+import config  # noqa: E402
 from screen.batch import (EASTMONEY_COLUMN, LINK_COLUMN, SCORE_COLUMN,
                           eastmoney_link_cell, eastmoney_url,
                           ensure_result_columns, link_target, read_csv_table,
@@ -52,6 +53,15 @@ class CliDefaultTest(unittest.TestCase):
 
 
 class OfflineReportTest(unittest.TestCase):
+    @staticmethod
+    def _fixture_data():
+        raw = load_bundle(FIXTURE)
+        return compute_scores(build_report_data(raw["calls"], raw["code"]))
+
+    @classmethod
+    def _fixture_risk_known(cls):
+        return cls._fixture_data()["data_quality"]["risk_known"]
+
     def test_cli_outputs_only_html(self):
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
@@ -77,10 +87,15 @@ class OfflineReportTest(unittest.TestCase):
             self.assertIn("产品/业务结构", html)
             self.assertIn("茅台酒", html)
             self.assertIn("机构目标价", html)
-            self.assertIn("近 15 个季度利润率趋势", html)
+            self.assertIn(f"近 {config.TREND_YEARS} 年季度毛利率/净利率趋势", html)
+            self.assertNotIn("近 15 个季度利润率趋势", html)
+            self.assertIn(f"下图为近 {config.VALUATION_YEARS} 年周频走势", html)
             self.assertNotIn("近 15 个季度估值走势（周频）", html)
+            self.assertNotIn("近 15 个季度周频走势", html)
             self.assertNotIn("本报告的估值", html)
-            self.assertIn("对企业进行 DCF 估值", html)
+            self.assertNotIn("对企业进行 DCF 估值", html)
+            self.assertNotIn("DCF", html)
+            self.assertNotIn("FCF 收益率", html)
             self.assertIn("用现金扣除与底线估值方式对企业进行估值", html)
             self.assertIn("货币资金/市值", html)
             self.assertIn("最近年报净利润总额", html)
@@ -88,8 +103,10 @@ class OfflineReportTest(unittest.TestCase):
             self.assertIn("机构目标价空间", html)
             self.assertIn("预期未来净利增速", html)
             self.assertIn("数据完整度", html)
-            self.assertIn("风险检查不计入 Q", html)
-            self.assertIn("风险检查 10/10 已知", html)
+            self.assertIn("第二节不参与打分", html)
+            self.assertIn("一致性闸门", html)
+            known = self._fixture_risk_known()
+            self.assertIn(f"风险检查 {known}/{config.RISK_CHECK_COUNT}", html)
             self.assertNotIn("置信度", html)
             self.assertEqual(html.count("<svg"), 4)
             self.assertIn('class="latest"', html)
@@ -98,17 +115,18 @@ class OfflineReportTest(unittest.TestCase):
             self.assertNotIn('type="application/json"', html)
 
     def test_compute_contract(self):
-        raw = load_bundle(FIXTURE)
-        data = compute_scores(build_report_data(raw["calls"], raw["code"]))
+        data = self._fixture_data()
         self.assertIsNotNone(data["quality"]["score"])
         self.assertIsNotNone(data["valuation_score"]["score"])
-        self.assertEqual(len(data["risks"]["checks"]), 10)
+        self.assertEqual(len(data["risks"]["checks"]), config.RISK_CHECK_COUNT)
+        self.assertIn(data["risks"]["gate_level"], (None, "watch", "avoid"))
         self.assertIn(data["decision"]["key"],
                       {"buy", "buy_ok", "buy_small", "buy_trial",
                        "watch_price", "expensive", "watch", "avoid", "unknown"})
         self.assertNotIn("confidence", data)
-        self.assertEqual(data["data_quality"]["risk_total"], 10)
-        self.assertEqual(data["data_quality"]["risk_known"], 10)
+        self.assertEqual(data["data_quality"]["risk_total"], config.RISK_CHECK_COUNT)
+        self.assertEqual(data["data_quality"]["risk_known"] + data["data_quality"]["risk_unknown"],
+                         config.RISK_CHECK_COUNT)
         self.assertEqual(data["data_quality"]["institution_coverage"], 4)
         self.assertEqual(data["data_quality"]["buy_blockers"], [])
         self.assertGreaterEqual(len(data["forecast"]["forecasts"]), 1)
@@ -128,12 +146,12 @@ class OfflineReportTest(unittest.TestCase):
         html = _section_valuation(data)
         i_forecast = html.index("机构对企业未来盈利的预期")
         i_flag = html.index("测试预期差提示")
-        i_dcf = html.index("对企业进行 DCF 估值")
+        i_cash = html.index("用现金扣除与底线估值方式对企业进行估值")
         self.assertLess(i_forecast, i_flag)
-        self.assertLess(i_flag, i_dcf)
+        self.assertLess(i_flag, i_cash)
 
-    def test_margin_trend_keeps_last_15_quarters(self):
-        dates = [f"{year}-{month}-{day}" for year in range(2022, 2027)
+    def test_margin_trend_keeps_last_five_years(self):
+        dates = [f"{year}-{month}-{day}" for year in range(2019, 2027)
                  for month, day in (("03", "31"), ("06", "30"), ("09", "30"), ("12", "31"))]
         merged = {
             d: {"income": {
@@ -143,25 +161,26 @@ class OfflineReportTest(unittest.TestCase):
             }} for d in dates
         }
         trend = _margin_trend(merged)
-        self.assertEqual(trend["count"], 15)
-        self.assertEqual(trend["start"], dates[-15])
+        self.assertEqual(trend["count"], 20)          # 5 年 × 4 个季度
+        self.assertEqual(trend["start"], dates[-20])
         self.assertEqual(trend["end"], dates[-1])
         self.assertAlmostEqual(trend["points"][-1]["gross"], 60.0)
         self.assertAlmostEqual(trend["points"][-1]["net"], 20.0)
 
-    def test_margin_chart_labels_all_quarters(self):
-        labels = [f"{year}Q{q}" for year in (23, 24, 25) for q in range(1, 5)]
-        labels += ["26Q1", "26Q2", "26Q3"]
+    def test_margin_chart_labels_all_quarters_in_five_years(self):
+        labels = [f"{year % 100:02d}Q{q}" for year in range(2022, 2027) for q in range(1, 5)]
         points = [
-            {"date": f"2023-{(i % 4) * 3 + 3:02d}-30", "label": label,
+            {"date": f"{2022 + i // 4}-{(i % 4) * 3 + 3:02d}-30", "label": label,
              "gross": 60.0 + i, "net": 20.0 + i}
             for i, label in enumerate(labels)
         ]
-        chart = _margin_chart({"points": points, "count": 15,
+        chart = _margin_chart({"points": points, "count": 20,
                                "start": points[0]["date"], "end": points[-1]["date"]})
-        self.assertEqual(chart.count('text-anchor="middle"'), 15)
-        self.assertIn("共 15 个季度", chart)
-        self.assertIn("最新 26Q3", chart)
+        self.assertEqual(chart.count('text-anchor="middle"'), 20)   # 20 个季度全部标刻度
+        self.assertIn("共 20 个季度", chart)
+        self.assertIn("最新 26Q4", chart)
+        self.assertIn(f"近 {config.TREND_YEARS} 年季度毛利率/净利率趋势", chart)
+        self.assertNotIn("不足", chart)                              # 满 5 年不写"不足"
 
     def test_valuation_chart_breaks_negative_pe(self):
         rows = [
@@ -295,9 +314,9 @@ class DecisionRulesTest(unittest.TestCase):
         raw = load_bundle(FIXTURE)
         data = build_report_data(raw["calls"], raw["code"])
         q = {"score": 80, "coverage": 100.0}
-        checks = [{"key": "cfo_ni", "name": "利润含金量", "status": "unknown"}]
+        checks = [{"key": "cash_flow", "name": "现金流质量", "status": "unknown"}]
         dq = _data_quality(data, q, checks)
-        self.assertTrue(any("利润含金量" in x for x in dq["buy_blockers"]))
+        self.assertTrue(any("现金流质量" in x for x in dq["buy_blockers"]))
 
     def _dq(self, blockers=None):
         return {"buy_blockers": blockers or []}
@@ -356,6 +375,15 @@ class ScoreSummaryTest(unittest.TestCase):
 
 
 class CsvBatchTest(unittest.TestCase):
+    def setUp(self):
+        # 批量模式把结果 Excel 写到 config.XLSX_OUT_DIR；测试改到临时目录，别污染项目
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.xlsx_dir = Path(tmp.name) / "xlsx-output"
+        patcher = patch.object(config, "XLSX_OUT_DIR", str(self.xlsx_dir))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _write_csv(self, path: Path, codes: list[tuple[str, str]]) -> None:
         lines = ["\ufeff代码,名称,备注"]
         lines.extend(f"{code},{name},保留" for code, name in codes)

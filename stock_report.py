@@ -7,8 +7,12 @@
     python3 stock_report.py --stock-code 301101 --out-dir /tmp/初筛
     python3 stock_report.py --stock-code 600519 --bundle tests/fixtures/mini_bundle.json
 
-批量（读取 CSV 中的股票代码，多线程生成报告并回写 CSV）：
-    python3 stock_report.py --csv-input ../stock-kline-screen-tool/csv_output/选股_2026-11-06.csv
+批量（读取 CSV 的代码列，多线程生成报告，并把结果三列回写到同一个 CSV）：
+    python3 stock_report.py --csv ../stock-kline-screen-tool/csv_output/选股_2026-11-06.csv
+
+批量产物：HTML 进 --out-dir（默认 html-report/），结果 Excel 进 config.XLSX_OUT_DIR
+（默认 xlsx-output/，文件名沿用输入 CSV 主名），原 CSV 就地补三列
+（综合评分 / HTML报告链接 / 东方财富网股票详情），其余列与行序不动。
 """
 from __future__ import annotations
 
@@ -116,6 +120,16 @@ def _save_csv(table) -> bool:
         return False
 
 
+def _xlsx_target(table) -> Path:
+    """批量结果 Excel 的落盘位置：`xlsx-output/<输入 CSV 主名>.xlsx`。
+
+    以前用 `table.path.with_suffix(".xlsx")`，Excel 会落在输入 CSV 旁边，
+    输入目录被产物污染；现在统一进项目内的 `config.XLSX_OUT_DIR`
+    （与 `html-report/` 同级），和导航页一起当产物看。
+    """
+    return Path(config.XLSX_OUT_DIR) / f"{Path(table.path).stem}.xlsx"
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="企业质量初筛：质量 + 估值 + 机构预期，输出 HTML；支持 CSV 批量"
@@ -123,8 +137,12 @@ def build_parser() -> argparse.ArgumentParser:
     source = p.add_mutually_exclusive_group(required=True)
     source.add_argument("--stock-code", help="股票代码，如 600519 / sh600519 / 600519.SH")
     source.add_argument(
-        "--csv-input",
-        help="批量模式：CSV 路径，读取其中的股票代码，生成报告并回写 CSV",
+        "--csv", "--csv-input", dest="csv_input", metavar="CSV",
+        help="批量模式：读取该 CSV 的代码列（代码 / 股票代码 / 证券代码 / code），逐只生成报告。"
+             "注意它会就地改写这个文件：末尾补三列（综合评分 / HTML报告链接 / 东方财富网股票详情），"
+             "其余列和行序不动，别拿只读的原始选股表直接跑；"
+             "结果 Excel 另存到 xlsx-output/（config.XLSX_OUT_DIR），不写回输入目录。"
+             "--csv-input 是这个参数的旧名，行为完全一致。",
     )
     p.add_argument("--out-dir", default=config.DEFAULT_OUT_DIR, help=f"输出目录，默认 {config.DEFAULT_OUT_DIR}")
     p.add_argument("--name", default="", help="覆盖报告文件名中的公司名（仅单股票模式）")
@@ -196,6 +214,23 @@ def _generate_report(
     )
 
 
+def _score_line(data: dict) -> str:
+    """CLI 摘要里的 Q/V 那一行。
+
+    金融股的 Q/V 是 None（not_applicable），直接 `f"{x:.1f}"` 会抛
+    TypeError，所以这里显式区分“不适用”和“算不出来（—）”。
+    """
+    qs = (data.get("quality") or {}).get("score")
+    q_text = f"{qs:.1f} / 100" if isinstance(qs, (int, float)) else "不适用"
+    v_block = data.get("valuation_score") or {}
+    vs = v_block.get("score")
+    if isinstance(vs, (int, float)):
+        v_text = f"{vs:.1f} / 100"
+    else:
+        v_text = "不适用" if v_block.get("not_applicable") else "—"
+    return f"  质量分 Q {q_text}   估值分 V {v_text}"
+
+
 def _run_single(args: argparse.Namespace) -> int:
     out_dir = Path(os.path.expanduser(args.out_dir)).resolve()
     try:
@@ -220,12 +255,11 @@ def _run_single(args: argparse.Namespace) -> int:
     if not args.quiet:
         d = data["decision"]
         dq = data.get("data_quality") or {}
-        vs = data["valuation_score"].get("score")
-        v_text = f"{vs:.1f}" if vs is not None else "—"
+        # 分母用「适用项」：金融股有 5 项口径不适用，算进分母会出现 6/14 这种假数字
+        applicable = (dq.get("risk_total") or 0) - (dq.get("risk_na") or 0)
         print(f"已生成  {target}")
-        print(f"  质量分 Q {data['quality']['score']:.1f} / 100   "
-              f"估值分 V {v_text} / 100")
-        print(f"  数据    风险检查 {dq.get('risk_known', '—')}/{dq.get('risk_total', '—')}；"
+        print(_score_line(data))
+        print(f"  数据    风险检查 {dq.get('risk_known', '—')}/{applicable or '—'}；"
               f"机构覆盖 {dq.get('institution_coverage', '—')} 家")
         print(f"  结论    {d['label']}（{d['reason']}）")
         print(f"  文件    {target.stat().st_size / 1024:.1f} KB")
@@ -252,10 +286,10 @@ def _apply_result(table, indices: list[int], result: ReportResult) -> None:
 
 def _run_batch(args: argparse.Namespace) -> int:
     if args.bundle:
-        print("错误：--csv-input 批量模式不支持 --bundle（每个股票需要实时取数）", file=sys.stderr)
+        print("错误：批量模式（--csv）不支持 --bundle（每个股票需要实时取数）", file=sys.stderr)
         return 2
     if args.name:
-        print("错误：--csv-input 批量模式不能使用 --name（每只股票使用自身公司名）", file=sys.stderr)
+        print("错误：批量模式（--csv）不能使用 --name（每只股票使用自身公司名）", file=sys.stderr)
         return 2
     if args.workers < 1:
         print("错误：--workers 必须大于等于 1", file=sys.stderr)
@@ -385,7 +419,7 @@ def _run_batch(args: argparse.Namespace) -> int:
             write_ok = _save_csv(table) and write_ok
             try:
                 write_index_html(table, out_dir)
-                write_report_xlsx(table)
+                write_report_xlsx(table, _xlsx_target(table))
             except Exception:
                 pass
             print("\n已中断：本次已完成的报告和 CSV 进度已保存；"
@@ -413,7 +447,7 @@ def _run_batch(args: argparse.Namespace) -> int:
     nav_paths: list[Path] = []
     try:
         nav_paths.append(write_index_html(table, out_dir))
-        nav_paths.append(write_report_xlsx(table))
+        nav_paths.append(write_report_xlsx(table, _xlsx_target(table)))
     except Exception as exc:  # noqa: BLE001
         print(f"警告：导航文件生成失败（CSV 和 HTML 不受影响）：{exc}", file=sys.stderr)
 
