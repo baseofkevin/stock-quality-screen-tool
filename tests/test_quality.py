@@ -23,7 +23,7 @@ class GroupAggregationTest(unittest.TestCase):
     def test_full_coverage_scores_full_weight(self):
         parts = [{"label": "A", "score": 20.0, "max": 20, "raw": ""},
                  {"label": "B", "score": 10.0, "max": 10, "raw": ""}]
-        group = _group(parts, "资本回报", 30)
+        group = _group(parts, "returns")
         self.assertEqual(group["score"], 30.0)
         self.assertEqual(group["coverage"], 100.0)
         self.assertEqual(group["max"], 30)
@@ -31,21 +31,21 @@ class GroupAggregationTest(unittest.TestCase):
     def test_partial_score_is_scaled_by_weight(self):
         parts = [{"label": "A", "score": 12.0, "max": 20, "raw": ""},
                  {"label": "B", "score": 10.0, "max": 10, "raw": ""}]
-        group = _group(parts, "资本回报", 30)
+        group = _group(parts, "returns")
         self.assertEqual(group["score"], 22.0)      # 22/30 × 30
         self.assertEqual(group["coverage"], 100.0)
 
     def test_missing_item_loses_its_points(self):
         parts = [{"label": "A", "score": None, "max": 20, "raw": "—"},
                  {"label": "B", "score": 10.0, "max": 10, "raw": ""}]
-        group = _group(parts, "资本回报", 30)
+        group = _group(parts, "returns")
         self.assertEqual(group["score"], 10.0)     # 10/30 × 30，而不是满分 30
         self.assertAlmostEqual(group["coverage"], 33.3, places=1)
 
     def test_all_missing_returns_none(self):
         parts = [{"label": "A", "score": None, "max": 20, "raw": ""},
                  {"label": "B", "score": None, "max": 10, "raw": ""}]
-        self.assertIsNone(_group(parts, "资本回报", 30)["score"])
+        self.assertIsNone(_group(parts, "returns")["score"])
 
 
 class QualityPerfectCompanyTest(unittest.TestCase):
@@ -294,6 +294,16 @@ class QualityMissingDataTest(unittest.TestCase):
         self.assertEqual(q["groups"], [])
         self.assertEqual(q["coverage"], 0.0)
 
+    def test_two_annuals_are_not_enough_either(self):
+        """0.9.4：门槛从 2 年提到 3 年。2 个点的 σ / CAGR 不该拿来定性。"""
+        q = quality(support.annual_rows(2))
+        self.assertIsNone(q["score"])
+        self.assertEqual(q["grade"], "数据不足")
+
+    def test_three_annuals_is_enough(self):
+        q = quality(support.annual_rows(3))
+        self.assertIsNotNone(q["score"])
+
     def test_all_fields_missing_returns_none(self):
         rows = support.annual_rows(2, revenue=None, net_profit=None, net_profit_total=None,
                                    deducted=None, gross_margin=None, roe=None, roic=None,
@@ -305,7 +315,8 @@ class QualityMissingDataTest(unittest.TestCase):
         self.assertEqual(q["grade"], "数据不足")
 
     def test_partial_group_still_produces_total(self):
-        rows = support.annual_rows(2, roe=20.0, roic=None, net_profit=None, ocf=None,
+        # 0.9.4 起年报 <3 个整只跳过，所以这里用 3 年（各年同值，中位数/σ 与 2 年时一致）
+        rows = support.annual_rows(3, roe=20.0, roic=None, net_profit=None, ocf=None,
                                    fcf=None, fcf_margin=None, debt=None, cash=None, ebit=None,
                                    finance_expense=None, goodwill=None, revenue=None,
                                    gross_margin=None, shares=None, total_assets=None,
@@ -325,8 +336,10 @@ class QualityGradeTest(unittest.TestCase):
     """分档边界：用 patch 控制总分，只验等级映射。"""
 
     def _grade_for(self, total):
-        def fake_group(parts, label, weight):
-            return {"key": label, "label": label, "weight": weight,
+        # 0.9.8 起 _group 只收 key，组名和权重都从 config 取
+        def fake_group(parts, key):
+            weight = config.QUALITY_WEIGHTS[key]
+            return {"key": key, "label": config.QUALITY_GROUP_LABELS[key], "weight": weight,
                     "score": weight * total / 100.0, "max": weight,
                     "coverage": 100.0, "items": parts}
 
@@ -376,6 +389,53 @@ class FinancialStockTest(unittest.TestCase):
     def test_financial_stock_passes_validate(self):
         from screen.validate import validate
         validate(self._data("证券"))                                 # 不应抛错
+
+
+class AnnualYearsGateTest(unittest.TestCase):
+    """上市不足 3 年（年报 <3 个）整只跳过：不是失败，也不出「数据不足」报告。"""
+
+    def _data(self, years):
+        return {"meta": {"code": "sh600519"},
+                "financials": {"annual": support.annual_rows(years)}}
+
+    def test_zero_annuals_is_an_error(self):
+        from screen.validate import ScreenError, validate
+        with self.assertRaises(ScreenError) as ctx:
+            validate(self._data(0))
+        self.assertIn("没有可用年报", str(ctx.exception))
+
+    def test_one_and_two_annuals_are_skipped(self):
+        from screen.validate import SkipStock, validate
+        for years in (1, 2):
+            with self.assertRaises(SkipStock) as ctx:
+                validate(self._data(years))
+            self.assertIn("上市不足 3 年", str(ctx.exception))
+            self.assertIn(f"仅 {years} 个年报", str(ctx.exception))
+
+    def test_skip_stock_is_a_screen_error(self):
+        """继承 ScreenError：忘了接住的地方仍按失败处理，不会静默吞掉。"""
+        from screen.validate import ScreenError, SkipStock
+        self.assertTrue(issubclass(SkipStock, ScreenError))
+
+    def test_skip_text_matches_config(self):
+        from screen.batch import SKIP_SCORE_TEXT
+        self.assertEqual(SKIP_SCORE_TEXT, f"跳过：上市不足 {config.MIN_ANNUAL_YEARS} 年")
+        self.assertEqual(config.MIN_ANNUAL_YEARS, 3)
+
+
+class ComputeScoresRobustnessTest(unittest.TestCase):
+    """只有 financials 的 data 也要能算完（P2-7：不假设 valuation/meta 键存在）。"""
+
+    def test_missing_valuation_block_does_not_crash(self):
+        data = compute_scores(support.with_annual(support.annual_rows(5)))
+        self.assertIn("decision", data)
+        pe_row = next(t for t in data["tracking"] if t["metric"] == "PE 分位")
+        self.assertEqual(pe_row["current"], "—")
+
+    def test_missing_meta_and_forecast_do_not_crash(self):
+        data = compute_scores({"financials": {"annual": support.annual_rows(5)},
+                               "valuation": {"metrics": {}}})
+        self.assertIsNone(data["valuation_score"]["score"])
 
 
 if __name__ == "__main__":

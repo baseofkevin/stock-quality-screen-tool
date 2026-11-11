@@ -28,12 +28,15 @@ Thumbs.db
 *.swo
 
 # 本工具生成的 HTML 报告 / 结果 Excel
-# 模板必须保留；示例报告与批量结果属于本地生成物，不上传
-*.html
-!templates/report.html
-/examples/
+# 以前这里用全局 `*.html` + `!templates/report.html`：省事，但会把 tests/fixtures/*.html
+# 这类夹具一起静默忽略——git 不报错，等你发现夹具没入库时已经晚了。
+# 现在按「产物目录」排除，仓库里其它位置的 .html 会正常出现在 git status 里。
 /html-report/
 /xlsx-output/
+/examples/
+# 示例目录只保留说明文件，报告本身是本地生成物
+/examples/*
+!/examples/README.md
 
 # 输出目录 / 临时文件 / 本地原始数据
 /out/

@@ -276,6 +276,22 @@ class ArGapTest(unittest.TestCase):
         self.assertEqual(c["status"], "watch")
         self.assertIn("仅提示", c["detail"])
 
+    def test_two_years_over_fifteen_but_small_base_only_warns(self):
+        """连续两年 >15pct 也不能绕过小基数保护（应收占营收 1.6%）。"""
+        rows = support.annual_rows(3, revenue=100e8, ar=[1.0e8, 1.2e8, 1.6e8])
+        c = checks_by_key(rows)["ar_gap"]
+        self.assertEqual(c["status"], "watch")
+        self.assertIn("仅提示", c["detail"])
+        self.assertIn("连续两年 > 15pct", c["detail"])
+        self.assertNotEqual(c["status"], "hit")
+
+    def test_material_ratio_boundary_still_hits(self):
+        """刚好 2%（AR_MATERIAL_RATIO）算够大，连续两年 >15pct 仍判命中。"""
+        rows = support.annual_rows(3, revenue=100e8, ar=[1.25e8, 1.5e8, 2.0e8])
+        c = checks_by_key(rows)["ar_gap"]
+        self.assertEqual(c["status"], "hit")
+        self.assertIn("连续两年 > 15pct", c["detail"])
+
     def test_receivable_fin_is_not_counted_as_receivable(self):
         """应收款项融资是票据结算，不是赊销：只有它增长时不报。"""
         rows = support.annual_rows(3, revenue=100e8, ar=0.0,
@@ -617,6 +633,17 @@ class FatalTest(unittest.TestCase):
         rows = support.annual_rows(5, ocf=[-1e8, -1e8, -1e8, -1e8, -1e8],
                                    debt=100e8, cash=10e8, ebit=16e8)
         self.assertIn("连续 3 年经营现金流为负且净负债/EBIT > 4", self._fatal(rows))
+
+    def test_two_year_history_cannot_claim_three_negative_years(self):
+        """只有 2 个年报时不能说「连续 3 年」（P2-3）。"""
+        rows = support.annual_rows(2, ocf=[-1e8, -1e8], debt=100e8, cash=10e8, ebit=16e8)
+        self.assertEqual(self._fatal(rows), [])
+
+    def test_missing_year_breaks_the_three_year_chain(self):
+        """最近三年里有一年 OCF 缺失 → 不能声称连续 3 年。"""
+        rows = support.annual_rows(5, ocf=[-1e8, -1e8, -1e8, None, -1e8],
+                                   debt=100e8, cash=10e8, ebit=16e8)
+        self.assertEqual(self._fatal(rows), [])
 
     def test_healthy_company_has_no_fatal(self):
         self.assertEqual(self._fatal(support.annual_rows(5)), [])

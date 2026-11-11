@@ -7,12 +7,13 @@
     python3 stock_report.py --stock-code 301101 --out-dir /tmp/初筛
     python3 stock_report.py --stock-code 600519 --bundle tests/fixtures/mini_bundle.json
 
-批量（读取 CSV 的代码列，多线程生成报告，并把结果三列回写到同一个 CSV）：
+批量（读取 CSV 的代码列，多线程生成报告；输入 CSV 只读，不写任何 CSV）：
     python3 stock_report.py --csv ../stock-kline-screen-tool/csv_output/选股_2026-11-06.csv
 
-批量产物：HTML 进 --out-dir（默认 html-report/），结果 Excel 进 config.XLSX_OUT_DIR
-（默认 xlsx-output/，文件名沿用输入 CSV 主名），原 CSV 就地补三列
-（综合评分 / HTML报告链接 / 东方财富网股票详情），其余列与行序不动。
+批量产物：HTML 进 --out-dir（默认 html-report/）；同目录生成导航页
+`<输入 CSV 主名>.html`；结果 Excel 进 config.XLSX_OUT_DIR（默认 xlsx-output/，
+文件名沿用输入 CSV 主名）。**输入 CSV 本身不会被改动**，指向只读表也安全；
+批量不产出任何 CSV，评分与链接只体现在导航页和 Excel 里。
 """
 from __future__ import annotations
 
@@ -24,8 +25,6 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
-from urllib.request import url2pathname
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -35,22 +34,21 @@ from screen.batch import (  # noqa: E402
     EASTMONEY_COLUMN,
     LINK_COLUMN,
     SCORE_COLUMN,
+    SKIP_SCORE_TEXT,
     CsvError,
     ReportResult,
     eastmoney_link_cell,
     ensure_result_columns,
-    link_target,
     read_csv_table,
     report_link_cell,
-    write_csv_table,
 )
 from screen.compute import build_report_data  # noqa: E402
-from screen.fetch import DataError, fetch_all, load_bundle, normalize_code  # noqa: E402
+from screen.fetch import DataError, fetch_all, load_bundle, normalize_code, set_quiet  # noqa: E402
 from screen.index_html import write_index_html  # noqa: E402
 from screen.render import render_html  # noqa: E402
 from screen.score import compute_scores  # noqa: E402
 from screen.summary import SummaryError, extract_score_summary  # noqa: E402
-from screen.validate import ScreenError, validate  # noqa: E402
+from screen.validate import ScreenError, SkipStock, validate  # noqa: E402
 from screen.xlsx import write_report_xlsx  # noqa: E402
 
 
@@ -73,25 +71,8 @@ def _write_atomic(path: Path, text: str) -> None:
                 pass
 
 
-def _link_path(link: str) -> Path | None:
-    """把 CSV 里的 file:/// 链接还原成本地路径。"""
-    link = link_target(link)
-    if not link:
-        return None
-    if link.startswith("file://"):
-        parsed = urlparse(link)
-        if parsed.scheme != "file":
-            return None
-        try:
-            return Path(url2pathname(parsed.path))
-        except ValueError:
-            return None
-    p = Path(os.path.expanduser(link))
-    return p if p.is_absolute() else None
-
-
 def _find_existing_report(out_dir: Path, code: str) -> Path | None:
-    """在输出目录里找该股票最新的一份完整报告。"""
+    """在输出目录里找该股票最新的一份完整报告（增量续跑的唯一依据）。"""
     if not out_dir.is_dir():
         return None
     marker = f"-{code}-"
@@ -102,22 +83,6 @@ def _find_existing_report(out_dir: Path, code: str) -> Path | None:
     if not matches:
         return None
     return max(matches, key=lambda p: p.stat().st_mtime)
-
-
-def _existing_report(row: dict[str, str], out_dir: Path, code: str) -> Path | None:
-    linked = _link_path(row.get(LINK_COLUMN, ""))
-    if linked is not None and linked.is_file():
-        return linked
-    return _find_existing_report(out_dir, code)
-
-
-def _save_csv(table) -> bool:
-    try:
-        write_csv_table(table)
-        return True
-    except CsvError as exc:
-        print(f"错误：{exc}", file=sys.stderr)
-        return False
 
 
 def _xlsx_target(table) -> Path:
@@ -139,10 +104,9 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument(
         "--csv", "--csv-input", dest="csv_input", metavar="CSV",
         help="批量模式：读取该 CSV 的代码列（代码 / 股票代码 / 证券代码 / code），逐只生成报告。"
-             "注意它会就地改写这个文件：末尾补三列（综合评分 / HTML报告链接 / 东方财富网股票详情），"
-             "其余列和行序不动，别拿只读的原始选股表直接跑；"
-             "结果 Excel 另存到 xlsx-output/（config.XLSX_OUT_DIR），不写回输入目录。"
-             "--csv-input 是这个参数的旧名，行为完全一致。",
+             "输入 CSV 只读，不会被改动，也不会产出新的 CSV；评分与链接只体现在"
+             "导航页（--out-dir 下的 <输入 CSV 主名>.html）和结果 Excel"
+             "（xlsx-output/ 下的同名文件）里。--csv-input 是这个参数的旧名，行为完全一致。",
     )
     p.add_argument("--out-dir", default=config.DEFAULT_OUT_DIR, help=f"输出目录，默认 {config.DEFAULT_OUT_DIR}")
     p.add_argument("--name", default="", help="覆盖报告文件名中的公司名（仅单股票模式）")
@@ -219,9 +183,14 @@ def _score_line(data: dict) -> str:
 
     金融股的 Q/V 是 None（not_applicable），直接 `f"{x:.1f}"` 会抛
     TypeError，所以这里显式区分“不适用”和“算不出来（—）”。
+    两栏写法必须一致：Q 也不能一律打成「不适用」。
     """
-    qs = (data.get("quality") or {}).get("score")
-    q_text = f"{qs:.1f} / 100" if isinstance(qs, (int, float)) else "不适用"
+    q_block = data.get("quality") or {}
+    qs = q_block.get("score")
+    if isinstance(qs, (int, float)):
+        q_text = f"{qs:.1f} / 100"
+    else:
+        q_text = "不适用" if q_block.get("not_applicable") else "—"
     v_block = data.get("valuation_score") or {}
     vs = v_block.get("score")
     if isinstance(vs, (int, float)):
@@ -243,6 +212,10 @@ def _run_single(args: argparse.Namespace) -> int:
             retries=args.retries,
             retry_wait=args.retry_wait,
         )
+    except SkipStock as exc:
+        # 不是错误：不满足处理条件（上市不足 3 年），不生成报告，退出码 0
+        print(f"跳过  {args.stock_code}：{exc}")
+        return 0
     except (DataError, ScreenError, ValueError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 2
@@ -273,7 +246,10 @@ def _run_single(args: argparse.Namespace) -> int:
 def _apply_result(table, indices: list[int], result: ReportResult) -> None:
     for index in indices:
         row = table.rows[index]
-        if result.error:
+        if result.skipped:
+            row[SCORE_COLUMN] = SKIP_SCORE_TEXT
+            row[LINK_COLUMN] = ""
+        elif result.error:
             row[SCORE_COLUMN] = "生成失败"
             row[LINK_COLUMN] = ""
         elif result.summary is None:
@@ -335,7 +311,8 @@ def _run_batch(args: argparse.Namespace) -> int:
     reused_codes = 0
     for code in unique_codes:
         indices = code_rows[code]
-        existing = None if args.force else _existing_report(table.rows[indices[0]], out_dir, code)
+        # 续跑只看输出目录里已有的报告（带代码的文件名），不依赖任何 CSV
+        existing = None if args.force else _find_existing_report(out_dir, code)
         summary = None
         if existing is not None:
             try:
@@ -361,7 +338,6 @@ def _run_batch(args: argparse.Namespace) -> int:
         table.rows[index][LINK_COLUMN] = ""
         table.rows[index][EASTMONEY_COLUMN] = ""
 
-    write_ok = _save_csv(table)
     if not args.quiet:
         if args.force:
             print("--force：忽略已有报告，全部重新生成")
@@ -395,13 +371,16 @@ def _run_batch(args: argparse.Namespace) -> int:
                 code = futures[future]
                 try:
                     result = future.result()
+                except SkipStock as exc:
+                    # 不填 error：跳过不是失败，error 只留给真错误
+                    result = ReportResult(code=code, skipped=True)
+                    if not args.quiet:
+                        print(f"[{done:>3}/{total}] {code}  跳过：{exc}", file=sys.stderr)
                 except Exception as exc:  # noqa: BLE001
                     result = ReportResult(code=code, error=str(exc))
                     print(f"[{done:>3}/{total}] {code} 生成失败：{exc}", file=sys.stderr)
                 _apply_result(table, code_rows[code], result)
                 done_count += 1
-                # 每完成一只就落一次 CSV，Ctrl-C 时已完成进度不会丢。
-                write_ok = _save_csv(table) and write_ok
                 if not args.quiet:
                     if result.summary is not None:
                         print(f"[{done:>3}/{total}] {result.name} {code}  "
@@ -416,13 +395,12 @@ def _run_batch(args: argparse.Namespace) -> int:
             for future in futures:
                 future.cancel()
             pool.shutdown(wait=False, cancel_futures=True)
-            write_ok = _save_csv(table) and write_ok
             try:
                 write_index_html(table, out_dir)
                 write_report_xlsx(table, _xlsx_target(table))
             except Exception:
                 pass
-            print("\n已中断：本次已完成的报告和 CSV 进度已保存；"
+            print("\n已中断：本次已完成的报告已保存，导航页与 Excel 按已完成部分生成；"
                   "重新运行会跳过已有报告。", file=sys.stderr)
             sys.stdout.flush()
             sys.stderr.flush()
@@ -432,33 +410,33 @@ def _run_batch(args: argparse.Namespace) -> int:
 
     ok = 0
     failed = 0
+    skipped = 0
     for index, row in enumerate(table.rows):
         if index in row_errors:
             failed += 1
+        elif row.get(SCORE_COLUMN) == SKIP_SCORE_TEXT:
+            skipped += 1                      # 硬门槛跳过：不是失败，不影响退出码
         elif row.get(SCORE_COLUMN) in ("", "生成失败", "评分提取失败"):
             failed += 1
         else:
             ok += 1
-
-    if not write_ok:
-        print("错误：CSV 回写失败；HTML 报告已保留，修复后可重新运行。", file=sys.stderr)
-        return 2
 
     nav_paths: list[Path] = []
     try:
         nav_paths.append(write_index_html(table, out_dir))
         nav_paths.append(write_report_xlsx(table, _xlsx_target(table)))
     except Exception as exc:  # noqa: BLE001
-        print(f"警告：导航文件生成失败（CSV 和 HTML 不受影响）：{exc}", file=sys.stderr)
+        print(f"警告：导航文件生成失败（HTML 报告不受影响）：{exc}", file=sys.stderr)
 
     if not args.quiet:
         print(f"\n批量完成：成功 {ok} 行（复用 {reused_rows} 行），失败 {failed} 行，"
               f"共 {len(table.rows)} 行；股票 {len(unique_codes)} 只")
+        if skipped:
+            print(f"  跳过 {skipped} 行（{SKIP_SCORE_TEXT}）")
         if pending_codes:
             print(f"  本次生成 {done_count}/{len(pending_codes)} 只")
-        print(f"  CSV      {table.path}")
+        print(f"  输入 CSV {table.path}（只读，未改动）")
         print(f"  报告目录 {out_dir}")
-        print(f"  新增列   {SCORE_COLUMN} / {LINK_COLUMN} / {EASTMONEY_COLUMN}")
         for nav in nav_paths:
             label = "导航页  " if nav.suffix.lower() == ".html" else "Excel   "
             print(f"  {label} {nav}")
@@ -473,6 +451,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.retry_wait < 0:
         print("错误：--retry-wait 不能小于 0", file=sys.stderr)
         return 2
+    # --quiet 连取数层的重试警告一起静音（失败仍会记进数据缺口）
+    set_quiet(args.quiet)
     try:
         if args.csv_input:
             return _run_batch(args)

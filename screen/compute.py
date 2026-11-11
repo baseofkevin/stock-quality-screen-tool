@@ -240,12 +240,20 @@ def _structure(annual: list[dict[str, Any]], years: int = 5) -> dict[str, Any]:
             "debt": rec.get("debt"),
         })
     bargain = [r["bargain"] for r in rows if r["bargain"] is not None]
+    # 趋势是「最后一个有数据的年 − 第一个有数据的年」，标签必须跟着实际跨度走：
+    # 写死「三年」而窗口是 5 年时，读者会拿 5 年的变化当成 3 年的。
+    bargain_years = [r["year"] for r in rows if r["bargain"] is not None and r.get("year")]
+    if len(bargain_years) >= 2:
+        span_years = bargain_years[-1] - bargain_years[0] + 1
+    else:
+        span_years = len(bargain_years) or None
     cl_ratios = [r["contract_ratio"] for r in rows if r["contract_ratio"] is not None]
     cl_vals = [r["contract"] for r in rows if r["contract"] is not None]
     return {
         "rows": rows,
         "bargain_latest": bargain[-1] if bargain else None,
         "bargain_trend": (bargain[-1] - bargain[0]) if len(bargain) >= 2 else None,
+        "bargain_trend_years": span_years,
         "contract_latest": cl_ratios[-1] if cl_ratios else None,
         "contract_yoy": ((cl_vals[-1] / cl_vals[-2] - 1) * 100.0
                          if len(cl_vals) >= 2 and cl_vals[-2] else None),
@@ -349,6 +357,7 @@ def _close_price(valuation: dict[str, Any], quote: dict[str, Any],
       1. 行情日期 == 口径日 → 行情价就是那天收盘（盘后运行）；
       2. 有 `prev_close` → 盘中运行时它就是上一交易日收盘，正好是口径日；
       3. PE(TTM) × EPS(TTM) 反推（与图上那条线同源，可用 PB×BPS 交叉验证）；
+         口径日 PE 为负时不反推（负 PE 乘 EPS 无意义），直接落到下一档；
       4. 兜底用行情实时价。
     返回 (价格, 口径说明)；说明会写进报告头，避免读者误以为这是实时价。
     """
@@ -360,15 +369,22 @@ def _close_price(valuation: dict[str, Any], quote: dict[str, Any],
     eps = (financials.get("latest") or {}).get("eps_ttm")
     derived = (pe * eps) if (num(pe) and num(eps) and pe > 0 and eps > 0) else None
 
+    def _basis(by_pe: bool = False) -> str:
+        """口径说明。没有东财估值序列时 as_of 为空，不能拼成「 收盘」。"""
+        note = "（按 PE×EPS 反推）" if by_pe else ""
+        if as_of:
+            return f"{as_of} 收盘{note}"
+        return f"收盘{note}" if by_pe else "上一交易日收盘"
+
     if as_of and quote_date and as_of == quote_date and live:
-        return live, f"{as_of} 收盘"
+        return live, _basis()
     if prev_close and prev_close > 0:
         # 反推值比 prev_close 差 5% 以上，通常是除权或序列错位；此时信任与图同源的反推值
         if derived and abs(derived - prev_close) / prev_close > 0.05:
-            return derived, f"{as_of} 收盘（按 PE×EPS 反推）"
-        return prev_close, f"{as_of} 收盘"
+            return derived, _basis(by_pe=True)
+        return prev_close, _basis()
     if derived:
-        return derived, f"{as_of} 收盘（按 PE×EPS 反推）"
+        return derived, _basis(by_pe=True)
     return live, "实时价"
 
 
@@ -386,7 +402,10 @@ def _years_before(iso: str, years: int) -> str:
 
 def _valuation_chart(ordered: list[dict[str, Any]], start: str = "",
                      years: int = 0) -> dict[str, Any]:
-    """最近 N 年的周频估值点；PE 为负时置空，并记录负值区间。
+    """最近 N 年的周频估值点；PE 为负时置空并标记 `pe_negative`。
+
+    负值区间不在这一层算：报告只需要「哪几段要打灰底」，`render._negative_bands()`
+    直接按 `pe_negative` 取连续下标，省一份没人读的日期区间。
 
     `ordered` 已是周频压缩后的序列。窗口从**最后一条可用数据**往前推 N 年，
     而不是从今天往前推：停牌、退市前最后一周也不会把图拉空。
@@ -407,18 +426,6 @@ def _valuation_chart(ordered: list[dict[str, Any]], start: str = "",
             "pb": pb if (pb is not None and pb > 0) else None,
             "ps": ps if (ps is not None and ps > 0) else None,
         })
-
-    ranges: list[list[str]] = []
-    range_start: int | None = None
-    for i, point in enumerate(points):
-        if point["pe_negative"]:
-            if range_start is None:
-                range_start = i
-        elif range_start is not None:
-            ranges.append([points[range_start]["date"], points[i - 1]["date"]])
-            range_start = None
-    if range_start is not None and points:
-        ranges.append([points[range_start]["date"], points[-1]["date"]])
 
     latest: dict[str, dict[str, Any] | None] = {}
     for key in ("pe", "pb", "ps"):
@@ -443,7 +450,6 @@ def _valuation_chart(ordered: list[dict[str, Any]], start: str = "",
         "span_years": span_years,
         # 截断后仍覆盖不到目标年数 → 说明该股可用历史本来就不够长
         "limited": bool(years and span_years and span_years < years - 0.25),
-        "negative_ranges": ranges,
         "latest": latest,
         "pe_negative_latest": bool(points and points[-1]["pe_negative"]),
     }
@@ -455,6 +461,8 @@ def _valuation(calls: list[dict[str, Any]],
 
     所有“当前值”都取序列最后一点（最后交易日收盘），不接受行情实时值——
     全篇估值口径统一到收盘，见 `_close_price()`。
+    口径日该指标为负或缺失时，该指标本次标为「不可用」（current / percentile 为 None），
+    不回退到历史最后一个正值：那个值不属于口径日，也不该进 V 分。
     """
     rows = _merge_rows(calls, "RPT_VALUEANALYSIS_DET")
     weekly: dict[tuple[int, int], dict[str, Any]] = {}
@@ -481,7 +489,7 @@ def _valuation(calls: list[dict[str, Any]],
             "chart": {
                 "points": [], "start": "", "end": "", "count": 0,
                 "years": years, "span_years": 0.0, "limited": False,
-                "negative_ranges": [], "latest": {}, "pe_negative_latest": False,
+                "latest": {}, "pe_negative_latest": False,
             },
         }
 
@@ -501,7 +509,19 @@ def _valuation(calls: list[dict[str, Any]],
             continue
         cur = current.get(key)
         if cur is None or cur <= 0:
-            cur = values[-1]        # 最后一点缺失或为负 → 退到最后一个有效值
+            # 口径日该指标为负/缺失 → 本次「不可用」，不回退到上一个正值。
+            # 回退会让表里的「最新收盘」和图上最后一个点不是同一天，还会把一个
+            # 口径日不存在的 PE 送进 V 的「预测 PE 相对当前 PE」。分位留空，
+            # min/max/points 仍然展示，读者仍能看到历史区间。
+            metrics[key] = {
+                "label": labels[key],
+                "current": None,
+                "percentile": None,
+                "min": round(min(values), 2),
+                "max": round(max(values), 2),
+                "points": len(values),
+            }
+            continue
         p = (sum(1 for v in values if v < cur) + 0.5 * sum(1 for v in values if v == cur)) / len(values) * 100.0
         metrics[key] = {
             "label": labels[key],
@@ -640,11 +660,15 @@ def _cash_valuation(annual: list[dict[str, Any]],
             value = cash + years * np_total
             per_share = (value / shares) if (shares and shares > 0) else None
             margin = ((value - cap) / value * 100.0) if (cap and value > 0) else None
+            # 安全边际 =（底线 − 市值）/ 底线，分母是底线：市值远高于底线时会算出
+            # −488% 这种读不懂的数。同格再给「市值 ÷ 底线」，读者一眼知道差几倍。
+            cap_times = (cap / value) if (cap and value > 0) else None
             anchors.append({
                 "years": years,
                 "value_yi": value / 1e8,
                 "per_share": per_share,
                 "margin_pct": margin,
+                "cap_times": cap_times,
             })
 
     return {

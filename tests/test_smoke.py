@@ -1,6 +1,4 @@
 # -*- coding: utf-8 -*-
-import csv
-import io
 import json
 import subprocess
 import sys
@@ -9,7 +7,6 @@ import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
-from urllib.parse import unquote, urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -18,8 +15,8 @@ import stock_report  # noqa: E402
 import config  # noqa: E402
 from screen.batch import (EASTMONEY_COLUMN, LINK_COLUMN, SCORE_COLUMN,
                           eastmoney_link_cell, eastmoney_url,
-                          ensure_result_columns, link_target, read_csv_table,
-                          report_link_cell, write_csv_table)  # noqa: E402
+                          ensure_result_columns, read_csv_table,
+                          report_link_cell)  # noqa: E402
 from screen.fetch import DataError, load_bundle, normalize_code  # noqa: E402
 from screen.index_html import write_index_html  # noqa: E402
 from screen.compute import (_cash_valuation, _margin_trend, _valuation_chart,
@@ -84,7 +81,9 @@ class OfflineReportTest(unittest.TestCase):
                 self.assertIn(heading, html)
             self.assertIn("PE/PB/PS 历史分位及走势图", html)
             self.assertIn("估值位置", html)          # 0.9.3：分位表读成一句话
-            self.assertIn("中位落在", html)
+            # 夹具只有 10 个周样本 → 0.9.6 起不给档位结论，只提示样本量
+            self.assertIn("分位样本仅 10 周", html)
+            self.assertNotIn("中位落在", html)
             self.assertIn("机构对企业未来盈利的预期", html)
             self.assertIn("产品/业务结构", html)
             self.assertIn("茅台酒", html)
@@ -193,7 +192,6 @@ class OfflineReportTest(unittest.TestCase):
         chart = _valuation_chart(rows, "")
         self.assertEqual(chart["points"][1]["pe"], None)
         self.assertTrue(chart["points"][1]["pe_negative"])
-        self.assertEqual(chart["negative_ranges"], [["2024-01-12", "2024-01-12"]])
         self.assertEqual(chart["latest"]["pe"]["value"], 22.0)
 
 
@@ -378,7 +376,7 @@ class ScoreSummaryTest(unittest.TestCase):
 
 class CsvBatchTest(unittest.TestCase):
     def setUp(self):
-        # 批量模式把结果 Excel 写到 config.XLSX_OUT_DIR；测试改到临时目录，别污染项目
+        # 结果 Excel 固定写到 config.XLSX_OUT_DIR；测试要落到临时目录，别污染项目的 xlsx-output/
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.xlsx_dir = Path(tmp.name) / "xlsx-output"
@@ -391,30 +389,14 @@ class CsvBatchTest(unittest.TestCase):
         lines.extend(f"{code},{name},保留" for code, name in codes)
         path.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
 
-    def _read_csv(self, path: Path) -> list[dict[str, str]]:
-        text = path.read_bytes().decode("utf-8-sig")
-        return list(csv.DictReader(io.StringIO(text, newline="")))
+    def _nav(self, out_dir: Path, stem: str = "batch") -> str:
+        """导航页是批量结果的唯一可读出口（批量不写任何 CSV）。"""
+        return (out_dir / f"{stem}.html").read_text(encoding="utf-8")
 
-    def test_roundtrip_preserves_columns_bom_and_crlf(self):
-        with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / "rows.csv"
-            self._write_csv(path, [("600519", "贵州茅台")])
-            table = read_csv_table(path)
-            ensure_result_columns(table)
-            table.rows[0][SCORE_COLUMN] = "可买"
-            table.rows[0][LINK_COLUMN] = report_link_cell(Path(td) / "报告.html")
-            write_csv_table(table)
+    def _reports(self, out_dir: Path) -> list[Path]:
+        return sorted(out_dir.glob("*-企业质量初筛-*.html"))
 
-            self.assertTrue(path.read_bytes().startswith(b"\xef\xbb\xbf"))
-            self.assertIn(b"\r\n", path.read_bytes())
-            rows = self._read_csv(path)
-            self.assertEqual(rows[0]["名称"], "贵州茅台")
-            self.assertEqual(rows[0]["备注"], "保留")
-            self.assertEqual(rows[0][SCORE_COLUMN], "可买")
-            self.assertTrue(rows[0][LINK_COLUMN].startswith('=HYPERLINK("file:///'))
-            self.assertTrue(link_target(rows[0][LINK_COLUMN]).startswith("file:///"))
-
-    def test_batch_cli_fills_score_and_link(self):
+    def test_batch_cli_writes_report_and_nav_but_no_csv(self):
         raw = load_bundle(FIXTURE)
         expected = compute_scores(build_report_data(raw["calls"], raw["code"]))["decision"]["label"]
 
@@ -426,24 +408,23 @@ class CsvBatchTest(unittest.TestCase):
             csv_path = td_path / "batch.csv"
             out_dir = td_path / "reports"
             self._write_csv(csv_path, [("600519", "贵州茅台")])
+            before = csv_path.read_bytes()
             with patch("stock_report.fetch_all", side_effect=fake_fetch):
                 rc = stock_report.main([
                     "--csv-input", str(csv_path), "--out-dir", str(out_dir),
                     "--workers", "2", "--quiet",
                 ])
             self.assertEqual(rc, 0)
-            rows = self._read_csv(csv_path)
-            self.assertEqual(rows[0][SCORE_COLUMN], expected)
-            link = rows[0][LINK_COLUMN]
-            self.assertTrue(link.startswith('=HYPERLINK("file:///'))
-            report_path = Path(unquote(urlparse(link_target(link)).path))
-            self.assertTrue(report_path.exists())
-            self.assertRegex(report_path.name,
+            self.assertEqual(csv_path.read_bytes(), before)      # 输入 CSV 只读
+            self.assertEqual(list(td_path.rglob("*.csv")), [csv_path])   # 不产出任何 CSV
+            reports = self._reports(out_dir)
+            self.assertEqual(len(reports), 1)
+            self.assertRegex(reports[0].name,
                              r"^贵州茅台-sh600519-企业质量初筛-\d{8}-\d{6}\.html$")
-            eastmoney = rows[0][EASTMONEY_COLUMN]
-            self.assertIn("东方财富网股票详情", eastmoney)
-            self.assertEqual(link_target(eastmoney),
-                             "https://quote.eastmoney.com/sh600519.html#fullScreenChart")
+            nav = self._nav(out_dir)
+            self.assertIn(expected, nav)
+            self.assertIn("https://quote.eastmoney.com/sh600519.html", nav)
+            self.assertIn('class="btn"', nav)
 
     def test_second_run_reuses_existing_html_without_fetching(self):
         raw = load_bundle(FIXTURE)
@@ -467,11 +448,8 @@ class CsvBatchTest(unittest.TestCase):
                     "--workers", "2", "--quiet",
                 ])
             self.assertEqual(rc, 0)
-            rows = self._read_csv(csv_path)
-            self.assertEqual(rows[0][SCORE_COLUMN], expected)
-            report_path = Path(unquote(urlparse(link_target(rows[0][LINK_COLUMN])).path))
-            self.assertEqual(report_path, existing)
-            self.assertEqual(len(list(out_dir.glob("*-企业质量初筛-*.html"))), 1)
+            self.assertEqual(self._reports(out_dir), [existing])
+            self.assertIn(expected, self._nav(out_dir))
 
     def test_force_regenerates_existing_report(self):
         raw = load_bundle(FIXTURE)
@@ -497,10 +475,7 @@ class CsvBatchTest(unittest.TestCase):
                 ])
             self.assertEqual(rc, 0)
             self.assertEqual(calls["n"], 1)
-            rows = self._read_csv(csv_path)
-            report_path = Path(unquote(urlparse(link_target(rows[0][LINK_COLUMN])).path))
-            self.assertNotEqual(report_path, existing)
-            self.assertEqual(len(list(out_dir.glob("*-企业质量初筛-*.html"))), 2)
+            self.assertEqual(len(self._reports(out_dir)), 2)
 
     def test_batch_continues_after_one_failure(self):
         def fake_fetch(code, timeout=90.0, **kwargs):
@@ -511,20 +486,20 @@ class CsvBatchTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             csv_path = td_path / "batch.csv"
+            out_dir = td_path / "reports"
             self._write_csv(csv_path, [("600519", "贵州茅台"), ("000001", "平安银行")])
             with patch("stock_report.fetch_all", side_effect=fake_fetch):
                 rc = stock_report.main([
-                    "--csv-input", str(csv_path), "--out-dir", str(td_path / "reports"),
+                    "--csv-input", str(csv_path), "--out-dir", str(out_dir),
                     "--workers", "2", "--quiet",
                 ])
             self.assertEqual(rc, 1)
             raw = load_bundle(FIXTURE)
             expected = compute_scores(build_report_data(raw["calls"], raw["code"]))["decision"]["label"]
-            rows = self._read_csv(csv_path)
-            self.assertEqual(rows[0][SCORE_COLUMN], expected)
-            self.assertTrue(rows[0][LINK_COLUMN].startswith('=HYPERLINK("file:///'))
-            self.assertEqual(rows[1][SCORE_COLUMN], "生成失败")
-            self.assertEqual(rows[1][LINK_COLUMN], "")
+            nav = self._nav(out_dir)
+            self.assertIn(expected, nav)
+            self.assertIn("生成失败", nav)
+            self.assertEqual(len(self._reports(out_dir)), 1)
 
 
 class EastmoneyUrlTest(unittest.TestCase):
@@ -554,7 +529,6 @@ class NavigationOutputTest(unittest.TestCase):
             table.rows[0][SCORE_COLUMN] = "可买"
             table.rows[0][LINK_COLUMN] = report_link_cell(report)
             table.rows[0][EASTMONEY_COLUMN] = eastmoney_link_cell("600519")
-            write_csv_table(table)
 
             xlsx = write_report_xlsx(table)
             with zipfile.ZipFile(xlsx) as zf:

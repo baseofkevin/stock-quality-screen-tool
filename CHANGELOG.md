@@ -12,6 +12,433 @@
 
 ---
 
+## 版本索引
+
+只列**带版本号**的记录（0.7.10 起）。更早的 2026-11-07 ~ 11-10 12:58 之间的记录
+是项目成型阶段的迭代，当时还没打版本号，按时间顺序排列在文末。
+
+| 版本 | 日期 | 一句话 |
+|---|---|---|
+| 0.9.9 | 2026-11-11 14:38 | 批量模式输入 CSV 只读，且不再写任何 CSV（结果看导航页 / Excel） |
+| 0.9.8 | 2026-11-11 14:04 | P3 八条结构清理（合并重复实现、删死代码、报告文字由 config 生成）+ P4 十二条文档同步 |
+| 0.9.7 | 2026-11-11 13:31 | 导航页文件名改为跟随输入 CSV 主名（`index.html` → `<CSV 主名>.html`） |
+| 0.9.6 | 2026-11-11 13:22 | P2 八条展示与健壮性：口径日期、样本量、市值倍数、`None%` 等 |
+| 0.9.5 | 2026-11-11 12:55 | P1-1 应收基数保护与档位解耦 + P1-3 年报 <3 年整只跳过 |
+| 0.9.4 | 2026-11-11 12:29 | P1-2 口径日 PE 为负不再回退到历史正值 |
+| 0.9.3 | 2026-11-10 16:35 | 第三节加「估值位置」七档判断（16:45 又补了一轮边界与测试） |
+| 0.9.2 | 2026-11-10 16:00 | `--csv-input` 帮助文案写明会就地改写 CSV |
+| 0.9.1 | 2026-11-10 15:47 | 删掉重复判定句；`csv-input/` 改名 `xlsx-output/` |
+| 0.9.0 | 2026-11-10 15:34 | Q 四处口径修正（毛利率水平门槛、3 年应计、FCF/营收、ROIC 达标年数）+ 决策矩阵一致性闸门 |
+| 0.8.1 | 2026-11-10 15:20 | 毛利率环比改善从一句「未改善」改成六个数字 + 点名 |
+| 0.8.0 | 2026-11-10 14:47 | 第一、二节指标改造（护城河三证据、14 项检查 4 组） |
+| 0.7.11 | 2026-11-10 13:28 | 全篇估值口径统一为「口径日收盘」 |
+
+---
+
+## 2026-11-11 14:38 +08:00
+
+### 修改（批量模式输入 CSV 只读且不写任何 CSV，v0.9.8 → 0.9.9）
+
+`--csv` 以前会把三列结果就地补进传入的 CSV。这条设计在评审 §6 就点过：
+对「别的工具刚产出的选股表」「只读的原始表」都是高风险动作。现在改成
+**输入只读、批量不写任何 CSV**：评分和链接只体现在导航页与结果 Excel 里。
+评分口径与报告内容一个字没动。
+
+> 本条 14:23 首次落地时是「结果另存 `csv-output/<主名>.csv`」；14:38 按你的要求
+> 取消这个文件与目录，连带删掉为它新加的写入路径（见「删除」）。项目里不产生任何 CSV。
+
+**新增**
+
+- `screen/batch.py:CsvTable` 变成纯内存结构（`path` / `fieldnames` / `rows` / `code_column`），
+  只承载「读出来的输入表」，不再持有编码、换行符、权限位这些回写才需要的东西。
+- 测试 +6：`test_cli.BatchRunTest` 4 条（输入字节与 mtime 不变、`0444` 输入照跑、
+  重复代码只取一次数、续跑不重取数）、`test_io.CsvReadTest.test_crlf_and_bom_are_read_transparently`、
+  `test_smoke.CsvBatchTest.test_batch_cli_writes_report_and_nav_but_no_csv`。
+
+**修改**
+
+- `stock_report._run_batch()`：删掉写 CSV 的整条链路（`_save_csv`、每完成一只就落盘的
+  `write_ok`、批前的空表预写、Ctrl-C 时的补写）；增量续跑改回只看
+  `--out-dir` 里 `*-{代码}-企业质量初筛-*.html`，不再读任何 CSV。
+- `stock_report`：`_existing_report()` / `_link_path()` 删除（它们的作用是「从 CSV 的链接列
+  找回报告」，CSV 不再有链接列，只剩 `_find_existing_report()` 一条路）。
+- 终端摘要去掉「结果 CSV」与「新增列」两行，只留输入 CSV（只读，未改动）、报告目录、
+  导航页、Excel。
+- `--csv` 帮助文案、`stock_report` 模块说明、`screen/batch.py` 模块说明同步改写。
+- `README.md`：批量章节（产物只剩导航页 + Excel）、参数表、退出码 130、目录树、
+  「重要边界」第 19 条。
+- `METHODOLOGY.md` 版本行 → 0.9.9。
+
+**删除**
+
+- `config.CSV_OUT_DIR`、`screen/batch.py:result_csv_path()` / `read_prior_results()` /
+  `write_csv_table()` / `RESULT_CSV_SUFFIX`、`CsvTable.out_path` / `.encoding` /
+  `.lineterminator` / `.mode`。
+- 对应测试：`tests/test_io.CsvWriteTest`（3 条）、`ResultCsvTest`（5 条）、
+  `PriorResultsTest`（5 条）、`test_lineterminator_detected`、
+  `test_smoke.CsvBatchTest.test_roundtrip_preserves_columns_bom_and_crlf`、
+  `test_cli.BatchRunTest.test_result_path_never_overwrites_input_in_csv_output_dir`。
+- `.gitignore` 里的 `/csv-output/`。
+- `CODE-REVIEW-2026-11-11.md`：评审记录不进项目仓库（已移到工作区的
+  `review-out/`，README 目录树里对应的一行一并去掉）。
+
+**影响**
+
+- **评分、V 分、结论、报告 HTML 全部不变**：只改文件的读写位置。
+- 批量产物：`html-report/` 下的报告 + `<输入 CSV 主名>.html` 导航页 +
+  `xlsx-output/<主名>.xlsx`。不再有结果 CSV，输入表也不会被加列。
+- 因此可以安全地把 `--csv` 指向只读表、共享盘上的表、别的工具产出的表。
+- 增量续跑行为不变（已有可解析报告的股票照旧跳过），只是判断依据只剩报告文件名里的代码。
+- 代价：想拿「代码 → 结论」的表格数据时，看 `xlsx-output/` 里的 Excel（三列齐全、链接可点）。
+
+---
+
+## 2026-11-11 14:04 +08:00
+
+### 修改（P3 八条结构清理 + P4 十二条文档同步，v0.9.7 → 0.9.8）
+
+这一轮不动 Q/V/决策口径，只做「同一件事只写一遍」和「文档跟上代码」。
+**结论层面唯一的可见变化是报告里的说明文字措辞**（见「影响」）。
+
+**P3-1 魔法数字收进 config**
+
+- `config.py`：新增 `QUALITY_ITEM_RANGES`（13 组「下界/上界/方向」）、`QUALITY_GRADES`
+  （六档分界）、`SCORE_BAR_GOOD/BAD`（分数条配色）、`CL_RATIO_STRONG`（预收型强势线 2%）、
+  `INTEREST_COVER_FATAL`（1.0）、`FATAL_NET_DEBT_EBIT`（4.0）。
+- `screen/score.py`：新增 `_band()`，16 个子项的打分区间全部改读 config；
+  质量分档改用 `grade_of()` + `QUALITY_GRADES`；致命项的 `<1`、`>4` 换常量。
+- `screen/render.py`：`_score_class()` 读 `SCORE_BAR_*`，`_bargain_verdict()` 读
+  `CL_RATIO_STRONG`，不再各写一遍 65/45/2.0。
+
+**P3-2 格式化三套并存 → 一份**
+
+- 新增 `screen/fmt.py`：`num` / `num_sep` / `pct` / `signed_pct` / `yi` / `yi_suffix`，
+  统一 None → `—`、非数字原样转义。
+- `score._p/_n/_yi/_delta_pct`、`render.n/pct/yi` 三套实现删除，改为从 fmt 导入别名
+  （46 + 53 处调用点不动，输出逐字节一致）。
+- 删除零调用的 `util.pct / yi / ratio / text`。
+
+**P3-3 号段规则三处 → 一份**
+
+- 新增 `screen/codes.py`：`split` / `market_of` / `normalize` / `six` / `secucode` / `eastmoney_url`。
+- `fetch.normalize_code`、`batch.eastmoney_url`、`eastmoney.to_secucode` 改为转调。
+- 顺带修掉一个潜在 bug：`to_secucode("600519.SH")` 以前 `replace('.','')` 后变成 8 位会抛错，
+  现在正常返回 `600519.SH`。
+
+**P3-4 报告里的权重/阈值文案由 config 生成**
+
+- `render._matrix_text()`：决策矩阵说明由 `config.DECISION_MATRIX` 生成，V 区间由相邻
+  门槛相减得来。
+- `render._grade_text()`：分档说明由 `QUALITY_GRADES` 生成。
+- `render._weight_text()` / `_v_formula_text()`：页脚方法说明与第四节 V 公式由
+  `QUALITY_WEIGHTS` / `VALUATION_WEIGHTS` / `VALUATION_WEIGHT_TEXT` 生成。
+- `render._fatal_rule_text()`：第二节末段四条致命项的数字由 config 生成。
+- `score._decision()` 重写为遍历 `config.DECISION_MATRIX`；旧 `DECISION_RULES`、
+  `BUY_MIN_V` 删除（前者零调用且文案已与代码不符，后者与矩阵是同一批数字）。
+
+**P3-5 综合评分改成稳定标记**
+
+- `render` 给三个数加 `data-metric="q|v|conclusion"`；
+  `screen/summary.py` 优先认标记，认不到才回退按小标题文字找——
+  回退这条路是给 0.9.7 及更早的报告留的（批量会复用老报告，不能一改就全「评分提取失败」）。
+
+**P3-6 / P3-7 / P3-8**
+
+- `screen/__init__.py`：`__version__` 改为 `from config import VERSION`（原来写死 0.1.0）。
+- `render._template_text()` 加 `lru_cache`，批量 155 只股票不再读盘 155 次。
+- `providers/eastmoney.py`：加跨线程节流（默认 400ms，`EASTMONEY_GLOBAL_INTERVAL_MS` 可调），
+  每次 HTTP 请求前等间隔，翻页请求也计入。
+
+**P4 文档十二条**
+
+1. `README.md` 目录树：根目录名改为 `stock-quality-screen-tool/`，补 `index_html.py`、
+   `xlsx.py`、`codes.py`、`fmt.py` 与新增测试文件。
+2. `README.md` 新增「CLI 参数与退出码」：11 个参数一张表（含默认值、适用范围，
+   标明 `--force` 仅批量、`--bundle/--name` 仅单股票），退出码 0/1/2/3/130 一张表。
+3. `README.md` 代码列候选从 4 个补到实际的 10 个。
+4. `README.md` / 短重试说明由「3 秒」改为「3~8 秒（3 秒 + 0~5 秒随机抖动）」，
+   并补东财节流的说明。
+5. `METHODOLOGY.md` §6 覆盖机构口径改正：代码是 `max(预测行 institutionCnt)`，
+   全为 0 才回退 `forecastInstitutions`，原文写反了。
+6. （已在 0.9.5 修完，本轮无需再改）
+7. `METHODOLOGY.md` 闸门表「数据不足 ≥2 项 → 不入闸门」改为
+   「`unknown` 不计入命中/提示，闸门只看这两项计数」。
+8. `config.py` 商誉三档改名：`GOODWILL_EQUITY_MAX(0.20)` → `WATCH`、
+   `GOODWILL_EQUITY_WARN(0.30)` → `HIT`，`FATAL(0.50)` 不变。
+9. 旧注释「商誉 30% 高危机（20% 用 GOODWILL_EQUITY_MAX）」随改名删除。
+10. `README.md` 环境一节写明「无第三方 Python 依赖，只用标准库，无需 pip」。
+11. `CHANGELOG.md` 顶部加「版本索引」表（本表），后续新记录同步维护。
+12. `.gitignore` 去掉全局 `*.html` + `!templates/report.html`，改为按产物目录排除
+    （`/html-report/`、`/xlsx-output/`），避免 `tests/fixtures/*.html` 被静默忽略。
+13. `examples/` 取舍：保留目录但只入库 `examples/README.md`，说明里面的报告是
+    2026-11-07 旧版式样例、想看当前版式用夹具现场跑；`README.md` 重要边界补第 18 条。
+
+**测试**
+
+- 新增 `tests/test_codes.py`（7）、`tests/test_fmt.py`（9）、`tests/test_config_contract.py`（14）、
+  `tests/test_eastmoney.py`（6）；`test_io.py` 增 4 条摘要标记位用例；
+  `test_render.py` 增模板缓存与版本号用例。
+- 删除 `test_fetch.CallMapTest`（`call_map` 已删）、`test_util.FormatTest`（改为 `test_fmt`）、
+  `test_compute` 的 `negative_ranges` 相关断言（字段已删）。
+- 全量 **497 条通过**（0.9.7 为 458 条）。
+
+**影响**
+
+- **算出来的数一个没变**：同一份 `mini_bundle` 夹具，Q 90.9 / V 62.7 / 「好公司，等价格」
+  与 0.9.7 完全一致；真实样本 600519、300058 的 Q/V 也未变。
+- **报告文字有四处措辞变化**（都是变得更自洽，不是改口径）：
+  V 公式由「目标价空间 40% + 预测 PE 20% + 未来净利增速 40%」改为
+  「机构目标价空间 40% + 预测 PE 相对当前 PE 20% + 预期未来净利增速 40%」（与构成表同名）；
+  决策矩阵里「V≥80 推荐」改为「V≥80 推荐买入」；页脚「未来净利增速」改为「预期未来净利增速」；
+  致命项说明合成一行（HTML 折行，视觉效果不变）。
+- **批量变慢**：东财每个请求间隔 0.4 秒，一只股票 3~4 个请求约多 1.2~1.6 秒。
+  这是拿时间换「不整段丢估值序列」，可用 `EASTMONEY_GLOBAL_INTERVAL_MS=0` 关掉。
+- **删除的公开名字**：`config.DECISION_RULES`、`config.BUY_MIN_V`、`config.GOODWILL_EQUITY_MAX/WARN`、
+  `fetch.call_map`、`util.pct/yi/ratio/text`、`compute` 返回的 `chart["negative_ranges"]`。
+  仓库内已无引用；外部若有人 import 会报 `ImportError`，属于本次有意的清理。
+
+---
+
+## 2026-11-11 13:31 +08:00
+
+### 修改（导航页文件名改为跟随输入 CSV 主名，v0.9.6 → 0.9.7）
+
+批量模式生成的浏览器导航页以前固定叫 `index.html`，一个目录里跑过多份 CSV 时
+互相覆盖，也看不出这份导航页对应哪份输入。现在改成跟输入 CSV 主名一致，
+和结果 Excel（`xlsx-output/<主名>.xlsx`）使用同一套命名。
+
+- `screen/index_html.py::write_index_html()`：目标文件从 `out / "index.html"`
+  改为 `out / f"{Path(table.path).stem}.html"`，例如 `live-batch2/rows.csv`
+  → `live-batch2/reports/rows.html`。函数签名和返回值不变，
+  `stock_report._run_batch()` 记录的 `nav_paths` 和终端「导航页」一行自动跟着变。
+- `tests/test_cli.py`：两处断言 `index.html` → `rows.html`（测试用 CSV 固定叫 `rows.csv`）。
+- `tests/test_io.py`：新增 `IndexHtmlTest.test_nav_filename_follows_csv_stem`，
+  用 `季度清单.csv` 验证输出 `季度清单.html`、落在 `--out-dir` 下、且不再生成 `index.html`。
+- `README.md`：导航页产物从 `html-report/index.html` 改为 `html-report/<输入 CSV 主名>.html`。
+- `config.py`：`VERSION` 0.9.6 → 0.9.7；`METHODOLOGY.md` 版本行同步。
+
+**影响**：只改文件名，导航页内容、按钮、徽标、搜索逻辑不变；HTML 报告、
+CSV 回写、XLSX 输出均不受影响。**注意**：老目录里遗留的 `index.html` 不会自动删除，
+重新跑一次批量会在同目录新增 `<主名>.html`，旧文件可手工删掉。
+
+## 2026-11-11 13:22 +08:00
+
+### 修复（P2 八条展示与健壮性问题，v0.9.5 → 0.9.6）
+
+八条都不改变 Q/V/决策，只修「读起来不对」和「调用方假设过强」的地方。逐条：
+
+**P2-1 无估值序列时价格口径变成 `" 收盘"`**
+
+- `screen/compute.py::_close_price()`：把口径说明拼装抽成内部函数 `_basis()`，
+  `as_of` 为空时返回「上一交易日收盘」，不再拼出空前缀。
+- `screen/render.py`：报告头 `估值口径 — 收盘` → `无估值序列（无口径日）`；
+  第三节引言整段改短版（原「全篇估值口径统一为 — 收盘：下表…」在没有序列时是空话），
+  并区分「接口没返回数据」与「取数失败（见上方取数缺口）」。
+
+**P2-2 占款比趋势恒写「三年」，实际窗口是 5 年**
+
+- `compute._structure()` 增 `bargain_trend_years`（= 首尾有数据年份的实际跨度）；
+- `render._structure_line()` 文案改为「近 5 年 +0.001」。实测 600519/000725 都从「三年」变「近 5 年」。
+
+**P2-3 只有 2 年历史也会报「连续 3 年经营现金流为负」致命项**
+
+- `score._fatal()`：`_years(data)[-3:]` 在只有 2 年时切片非空，会把 2 年说成 3 年。
+  改为先要求 `len(ocf_3y) >= 3` 且三年都有值且都为负；缺失年份会打断链条。
+- 影响：2 年报的公司不再被这条打成「回避」。P1-3 落地后 2 年报本来就被跳过，这层是防回归。
+
+**P2-4 CLI 把「Q 算不出来」显示成「不适用」**
+
+- `stock_report._score_line()`：Q 与 V 用同一套写法——`not_applicable` 才是「不适用」，
+  否则打「—」。
+
+**P2-5 分位样本太少仍输出七档结论**
+
+- 新增 `config.VAL_MIN_SAMPLE_WEEKS = 52`；
+- `render._valuation_verdict()/_valuation_position()` 增 `sample` 参数：样本不足 1 年时
+  只报分位、不贴档名，另写一句「分位样本仅 N 周，历史太短，分位仅供参考，不给档位结论」；
+- 正常情况在结论句后补「（样本 454 周）」，读者能判断分位可靠性。
+
+**P2-6 安全边际 −488% 读不懂**
+
+- `compute._cash_valuation()` 每个 anchor 增 `cap_times = 总市值 ÷ 底线价值`；
+- `render` 底线表同格补「（市值 5.9 倍）」（仅倍数 > 1 时显示），并加一句脚注说明
+  分母是底线、所以会小于 −100%。口径不变，只是多一个能读懂的量纲。
+
+**P2-7 `compute_scores()` 假设 data 一定有 `valuation` 键**
+
+- `score.py` 两处 `data["valuation"]`、一处 `data["meta"]` 改成 `.get(...) or {}`。
+  用 `support.with_annual()` 直接调用不再 `KeyError`，跟踪表 PE 分位打「—」。
+
+**P2-8 `--quiet` 仍会打重试警告；`--workers` 对腾讯侧无加速**
+
+- `screen/fetch.py`：新增模块级 `QUIET` 与 `set_quiet()`，重试警告按开关决定是否打印
+  （失败仍记录到数据缺口）；
+- `stock_report.main()` 解析完参数就 `set_quiet(args.quiet)`；
+- `README`：说明 `--workers` 主要并行东财取数与渲染，腾讯侧受跨线程全局节流，
+  不是线性加速，盲目调大更容易撞限频。
+
+**测试**：441 → **457** 全绿。新增：`ClosingBasisTest`（空口径日）、`StructureTrendTest`（3）、
+`CashValuationUnitTest`（倍数 2）、`FatalTest`（2 年报 / 缺年份）、`ScoreLineTest`（Q 打 —）、
+`SectionValuationTest`（2：无序列不印空日期、倍数与脚注）、`ComputeScoresRobustnessTest`（2）、
+`ClientRetryTest`（静音 2）、`ValuationVerdictTest`（2：短样本不给档位）、`SingleRunTest`（quiet 透传）。
+
+**文档**：`METHODOLOGY.md` §5（口径日无序列、分位样本门槛、安全边际倍数）、
+`README.md`（估值位置样本门槛、底线倍数、`--workers` / `--quiet` 说明）。
+
+**真实样本回归**：600519 Q 90.9 / V 62.7 / 好公司等价格、000725 Q 40.7 / V 100.0 / 回避
+——与 0.9.5 完全一致；报告里能看到「近 5 年 +0.001」「（样本 454 周）」「−488.1%（市值 5.9 倍）」。
+
+---
+
+## 2026-11-11 12:55 +08:00
+
+### 修复 / 新增（P1-1 应收小基数保护解耦 + P1-3 上市不足 3 年整只跳过，v0.9.4 → 0.9.5）
+
+#### 一、P1-1：连续两年 >15pct 不再绕过小基数保护
+
+**背景**：档位判定写在基数判定外面——
+
+```python
+if latest_gap > config.AR_REV_GAP_ALERT:
+    if both:                       # 连续两年 > 15pct → 直接命中
+        status = "hit"
+    else:
+        if ar_ratio < config.AR_MATERIAL_RATIO:
+            detail = "应收不足营收 2%，仅提示；" + detail
+        status = "watch"
+```
+
+应收占营收 1.6%、两年增速差 +20.0pct / +33.3pct 时判 `hit`，与
+`METHODOLOGY.md`「0.5%~2% 只提示」和 README「小基数保护」都相反。
+而 `hit` 会进一致性闸门：命中 1 项 → 买入类降「观察」，命中 ≥2 项 → 降「回避」。
+等于让一个只有几千万的科目改变了最终结论。
+
+**修改**（`screen/score.py`）：先判基数再判档位。
+
+```python
+material = ar_ratio >= config.AR_MATERIAL_RATIO
+if latest_gap is not None and latest_gap > config.AR_REV_GAP_ALERT:
+    if both and material:
+        status = "hit"
+        detail = "连续两年 > 15pct；" + detail
+    else:
+        if not material:
+            detail = ("连续两年 > 15pct，但应收不足营收 2%，仅提示；"
+                      if both else "应收不足营收 2%，仅提示；") + detail
+        status = "watch"
+```
+
+基数不足时**保留「连续两年 > 15pct」这个事实**（读者需要知道），只是不升级为命中。
+
+**影响**：只影响「应收/营收 0.5%~2% 且连续两年增速差 >15pct」这一类公司，把它们从
+`hit` 降为 `watch`；Q 分不读风险检查的状态，所以 **Q 不变**，变的只有一致性闸门是否触发。
+四只样本（600519 / 000725 / 300058 / 600733）重跑 Q/V/结论**完全一致**。
+
+#### 二、P1-3：年报 <3 个不处理（硬门槛，跳过而非失败）
+
+**背景**：旧逻辑两端都不对——`_quality()` 门槛是 2 年，`validate()` 只在 Q 为 `None` 时抛一句
+泛化的「质量分无法计算」：
+
+- 只留 1 个年报 → `ScreenError: 质量分无法计算`，退出码 2，批量记「生成失败」（原因被吞掉）；
+- 只留 2 个年报 → **照常出报告、照常打 Q 分**。2 个点的 σ、2 年 CAGR 用来定性，
+  比失败更隐蔽。
+
+**修改**：
+
+- `config.py`：新增 `MIN_ANNUAL_YEARS = 3`。
+- `screen/score.py:_quality()`：门槛 `len(ys) < 2` → `< config.MIN_ANNUAL_YEARS`。
+- `screen/validate.py`：新增 `SkipStock(ScreenError)`；年报数判定放到最前面
+  （早于 Q 判定，否则会被「质量分无法计算」抢先）；0 个年报仍属 `ScreenError`。
+- `screen/batch.py`：`ReportResult.skipped`（不满足条件，不算失败）；新增
+  `SKIP_SCORE_TEXT = "跳过：上市不足 3 年"`（由 `config.MIN_ANNUAL_YEARS` 拼出）。
+- `stock_report.py`：
+  - 单股票模式捕 `SkipStock` → 打印「跳过 600519：上市不足 3 年（仅 2 个年报），本工具不处理」，
+    退出码 **0**（不是参数错误，不该用 2 冒充）；
+  - 批量模式 `SkipStock` 单独成支 → CSV 写「跳过：上市不足 3 年」、报告链接留空、不写 HTML；
+  - 统计把 `skipped` 与 `failed` 分开，多打一行「跳过 N 行」；只有真失败才让退出码为 1。
+- `screen/index_html.py:_badge_class()`：「跳过」归灰色 `unknown` 徽标
+  （此前会 fall through 到 `watch`，显示成观察类）。
+- 文档：`METHODOLOGY.md` §1（年报门槛）、§4 小基数保护、§8 已知限制第 12 条、
+  `README.md` 批量章节（四种非结论值对照表）、重要边界第 17 条、
+  `config.DECISION_RULES` 的 `unknown` 注释收窄含义。
+
+**影响**：
+
+- 正常公司（年报 ≥3 个）**完全不变**：四只样本 Q/V/结论逐项一致。
+- 年报 1~2 个：从「失败」或「照出报告」变成**跳过**，CSV 里能一眼看出原因。
+- 金融股同样走这个门槛，不做例外。
+- 实测发现：腾讯接口连**上市前的年报**一起返回，试了 301498 / 688581 / 920002 等新股的
+  `annual` 都是 5 年，所以这个门槛在真实数据上**很少触发**；它防的是接口给不出 3 年
+  （极新股、停牌断档、数据源异常）的场景。用真实数据截断成 2 个年报（600519 的
+  2024/2025 两期）走 `--bundle` 验证：打印跳过、退出码 0、不生成任何 HTML。
+- 3 年只是最低线：Q 里「5 年 ROIC 中位数」「5 年中 4 年高于 WACC」按可用年数算，
+  不另加 `MOAT_MIN_YEARS`。
+
+**测试**：424 → **440** 全绿。新增/调整：
+`test_risk_decision.ArGapTest`（+2：两年超 15pct 但基数不足 → watch；2.0% 边界仍 hit）、
+`test_quality`（`QualityMissingDataTest` +2、`AnnualYearsGateTest` +4）、
+`test_cli`（+3：单股票跳过退出码 0、批量写跳过值且不产 HTML、跳过与失败分开计数）、
+`test_io.IndexHtmlTest`（+1：跳过徽标为 unknown）；
+`test_partial_group_still_produces_total` 的样本从 2 年改为 3 年（同值，结论不变）。
+
+---
+
+## 2026-11-11 12:29 +08:00
+
+### 修复（P1-2：口径日 PE 为负时不再回退到历史正值，v0.9.3 → 0.9.4）
+
+**背景**：`_valuation()` 取“当前值”时用的是 `current = 口径日那一行`，但一旦该值 ≤0，
+旧代码 `cur = values[-1]` 会**退到序列里最后一个正值**，并且这个值同时用来：算分位、
+填分位表“最新收盘”、经 `meta.pe` 进 V 的「预测 PE 相对当前 PE」。于是亏损股会拿到
+一个**不属于口径日**的 PE。实测两个真实样本：
+
+| 代码 | 口径日 | 口径日 PE(TTM) | 旧口径退回去的值 | 旧分位 |
+|---|---|---|---:|---:|
+| 600733 北汽蓝谷 | 2026-11-10 | −6.80 | 206.18（**2020-04-29**） | 29.1% |
+| 002005 德豪润达 | 2026-11-10 | −54.89 | 98.45（2026-10-23） | 77.1% |
+
+北汽蓝谷那一行尤其糟：报告写着“最新收盘 206.18 倍、历史分位 29.1%（不贵）”，
+而这个数来自六年前，与图上最后一个点（PE 为负、断线）根本不是同一天。
+
+**修改**：
+
+- `screen/compute.py` `_valuation()`
+  - 删掉 `cur = values[-1]` 回退分支。口径日该指标为负/缺失 → 本次判为「不可用」：
+    `current=None`、`percentile=None`，`min/max/points` 照旧给（历史区间仍可见）；
+  - docstring 补口径说明。
+- `screen/score.py`
+  - `_tracking()`：PE 分位行改成显式判 `None`。此前 `pe.get('percentile', '—')` 在
+    `percentile` 存在但为 `None` 时会打成 **`None%`**（P1-2 实测踩出来的）；
+  - `_valuation_score()`：当前 PE 为 `None` 且 `chart.pe_negative_latest` 为真时，
+    原始值文案写「**口径日 PE 为负，不参与**」，不再笼统写“缺少当前 PE”——数据是有的，
+    只是这个口径不能用。
+- `screen/render.py`：分位表下方加一行脚注，说明 `—` 的含义（负/缺失，不计分位、
+  不进 V、不退回历史正值），避免读者把 `—` 读成“数据没取到”。
+- `config.py`：`VERSION` → `0.9.4`；`METHODOLOGY.md` 版本行同步。
+- 文档：`METHODOLOGY.md` §5（分位节新增“不可用”一条；预测 PE 一节写明当前 PE 取口径日、
+  为负则不参与；口径日收盘价一节写明负 PE 不做 PE×EPS 反推）、`README.md`
+  （第三节说明加一段、已知限制新增第 16 条）。
+
+**影响（已用真实样本对照重跑）**：
+
+- 口径日 PE > 0 的股票**完全不变**：600519 V 62.7→62.7（PE 21.89 / 18.0%）、
+  000725 100.0→100.0、300058 61.4→61.4，分位表逐字相同。
+- 口径日 PE ≤ 0 的股票：分位表该行由「206.18 / 29.1%」变成「— / —」；
+  V 的「预测 PE 相对当前 PE」该项退出，权重按剩余项归一。
+  600733、002005 这两只的 V 本来就是“数据不足”（最近年报亏损 → 增速项缺失），
+  所以 V 仍为空，**结论未变**；影响集中在“不再展示一个假的当前 PE”。
+- 夹具里构造的“口径日 PE 为负但年报盈利”样本（V 可算）则从 62.7 → **64.7**：
+  因为少了一个 0 分的 PE 项，只剩目标价空间与增速两项按 80 权重归一。
+  方向上：PE 项原本得分越低，新口径 V 抬得越多；原本满分则略降（该项 100 时 Δ = −7.1）。
+- 副作用一处：口径日 PE 为负时不能再 `PE×EPS` 反推收盘价，落到 `prev_close`
+  或实时价（`_close_price` 已有该分支，无需改动）。
+
+**测试**：`tests/test_compute.py` 新增 `NegativeLatestMetricTest`（4 例）：
+负值标为不可用、其他指标不受影响、口径日缺失同样判不可用、
+负 PE 时收盘价不再用陈旧 PE 反推。424 → **428 全绿**。
+
+---
+
 ## 2026-11-10 16:45 +08:00
 
 ### 修复 / 新增（估值位置那句话的边界加固与测试补全，v0.9.3 内追加）

@@ -340,6 +340,16 @@ class ClosingBasisTest(unittest.TestCase):
         self.assertAlmostEqual(price, 88.0)
         self.assertEqual(basis, "实时价")
 
+    def test_basis_has_no_empty_date_when_no_valuation_series(self):
+        """没有东财估值序列时不能拼出「 收盘」这种空日期（P2-1）。"""
+        price, basis = _close_price({"sample": {}, "metrics": {}},
+                                    {"time": "2024-01-15", "price": 88.0,
+                                     "prev_close": 87.0},
+                                    {"latest": {}})
+        self.assertAlmostEqual(price, 87.0)
+        self.assertEqual(basis, "上一交易日收盘")
+        self.assertNotIn(" 收盘", basis)          # 前面不许出现空格
+
     def test_market_cap_recomputed_from_close(self):
         yi, yuan = market_cap_yi({"total_market_cap": 1.0e11, "price": 90.0,
                                   "total_shares": 1e9}, price=100.0)
@@ -350,6 +360,46 @@ class ClosingBasisTest(unittest.TestCase):
         yi, _ = market_cap_yi({"total_market_cap": 1827.9, "price": 100.0,
                                "total_shares": 1.8279e9})
         self.assertAlmostEqual(yi, 1827.9, delta=0.1)
+
+
+class NegativeLatestMetricTest(unittest.TestCase):
+    """口径日该指标为负/缺失 → 本次不可用，不退回历史最后一个正值（0.9.4）。"""
+
+    def _val(self, pe_last=-12.5, pb_last=5.2):
+        rows = [
+            {"TRADE_DATE": "2024-01-05", "PE_TTM": 20.0, "PB_MRQ": 5.0, "PS_TTM": 4.0},
+            {"TRADE_DATE": "2024-01-12", "PE_TTM": pe_last, "PB_MRQ": pb_last, "PS_TTM": 4.2},
+        ]
+        return _valuation([value_call(rows)])
+
+    def test_negative_pe_is_marked_unavailable(self):
+        pe = self._val()["metrics"]["pe"]
+        self.assertIsNone(pe["current"])
+        self.assertIsNone(pe["percentile"])
+        # 历史区间仍然保留，读者还能看到 PE 曾在哪个范围
+        self.assertAlmostEqual(pe["min"], 20.0)
+        self.assertAlmostEqual(pe["max"], 20.0)
+        self.assertEqual(pe["points"], 1)          # 只有 >0 的值进序列
+
+    def test_other_metrics_are_unaffected(self):
+        metrics = self._val()["metrics"]
+        self.assertAlmostEqual(metrics["pb"]["current"], 5.2)
+        self.assertIsNotNone(metrics["pb"]["percentile"])
+
+    def test_missing_latest_is_also_unavailable(self):
+        pe = self._val(pe_last=None)["metrics"]["pe"]
+        self.assertIsNone(pe["current"])
+        self.assertIsNone(pe["percentile"])
+
+    def test_close_price_no_longer_derives_from_stale_pe(self):
+        """PE 不可用时不能拿旧 PE×EPS 反推收盘价，应退回 prev_close。"""
+        val = self._val()
+        # 行情日晚于口径日（盘中运行）：走 prev_close 分支，不再用 PE×EPS 反推
+        price, basis = _close_price(
+            val, {"time": "2024-01-15", "price": 101.0, "prev_close": 99.0},
+            {"latest": {"eps_ttm": 4.0}})
+        self.assertAlmostEqual(price, 99.0)
+        self.assertEqual(basis, "2024-01-12 收盘")
 
 
 class ValuationSeriesTest(unittest.TestCase):
@@ -387,7 +437,9 @@ class ValuationSeriesTest(unittest.TestCase):
         chart = val["chart"]
         self.assertEqual([p["date"] for p in chart["points"]],
                          ["2024-01-05", "2024-01-12", "2024-01-19", "2024-01-26"])
-        self.assertEqual(chart["negative_ranges"], [["2024-01-19", "2024-01-19"]])
+        self.assertEqual(chart["pe_negative_latest"], False)
+        self.assertEqual([p["pe_negative"] for p in chart["points"]],
+                         [False, False, True, False])   # 负值只打标记，区间交给 render
         self.assertEqual(val["metrics"]["pe"]["points"], 3)  # 分位仍用全历史
 
     def test_empty_series_is_not_available(self):
@@ -450,7 +502,8 @@ class ValuationChartWindowTest(unittest.TestCase):
 
 
 class ValuationChartTest(unittest.TestCase):
-    def test_negative_ranges_are_paired(self):
+    def test_negative_pe_points_are_flagged_not_ranged(self):
+        """负 PE 只置空并打 `pe_negative` 标记；区间由 render._negative_bands() 自己取。"""
         rows = [
             {"TRADE_DATE": "2024-01-05", "PE_TTM": 20},
             {"TRADE_DATE": "2024-01-12", "PE_TTM": -1},
@@ -459,9 +512,10 @@ class ValuationChartTest(unittest.TestCase):
             {"TRADE_DATE": "2024-02-02", "PE_TTM": 0},
         ]
         chart = _valuation_chart(rows, "")
-        self.assertEqual(chart["negative_ranges"],
-                         [["2024-01-12", "2024-01-19"], ["2024-02-02", "2024-02-02"]])
-        self.assertEqual(chart["points"][1]["pe"], None)
+        self.assertNotIn("negative_ranges", chart)
+        self.assertEqual([p["pe"] for p in chart["points"]], [20, None, None, 25, None])
+        self.assertEqual([p["pe_negative"] for p in chart["points"]],
+                         [False, True, True, False, True])
         self.assertIsNone(chart["latest"]["pe"])
         self.assertTrue(chart["pe_negative_latest"])
 
@@ -605,6 +659,47 @@ class CashValuationUnitTest(unittest.TestCase):
         self.assertIsNone(cv["ex_cash_cap_yi"])
         self.assertIsNone(cv["ex_cash_pe"])
         self.assertIsNone(cv["anchors"][0]["margin_pct"])
+
+    def test_anchor_carries_market_cap_multiple(self):
+        """市值远高于底线时 −488% 读不懂，同格再给「市值 ÷ 底线」（P2-6）。"""
+        annual = [{"date": "2025-12-31", "cash": 1e10, "net_profit_total": 1e9}]
+        # 底线（3 年）= 100 + 3×10 = 130 亿；市值 590 亿 → 4.54 倍
+        cv = _cash_valuation(annual, {"date": "2025-12-31", "cash": 1e10},
+                             {}, 5.9e10)
+        anchor = next(a for a in cv["anchors"] if a["years"] == 3)
+        self.assertAlmostEqual(anchor["cap_times"], 5.9e10 / 1.3e10, places=4)
+        self.assertAlmostEqual(anchor["margin_pct"], -353.8, places=1)
+
+    def test_anchor_multiple_none_without_market_cap(self):
+        annual = [{"date": "2025-12-31", "cash": 1e9, "net_profit_total": 1e8}]
+        cv = _cash_valuation(annual, {"date": "2025-12-31", "cash": 1e9}, {}, None)
+        self.assertIsNone(cv["anchors"][0]["cap_times"])
+
+
+class StructureTrendTest(unittest.TestCase):
+    """第一节「货款占用」趋势：标签的年数必须跟着实际跨度（P2-2）。
+
+    `_structure()` 的入参与 production 一致：年报列表**最新在前**。
+    """
+
+    def test_trend_years_follow_window(self):
+        annual = [{"year": 2025 - i, "payable": 10.0 + i, "ar": 50.0, "inventory": 50.0}
+                  for i in range(5)]          # 2025, 2024, …, 2021
+        st = compute._structure(annual)
+        self.assertEqual(st["bargain_trend_years"], 5)
+        self.assertAlmostEqual(st["bargain_latest"], 10.0 / 100.0)   # 最新一年（2025）应付 10 亿
+
+    def test_trend_years_with_short_history(self):
+        annual = [{"year": 2026 - i, "payable": 10.0 + i, "ar": 50.0, "inventory": 50.0}
+                  for i in range(3)]
+        st = compute._structure(annual)
+        self.assertEqual(st["bargain_trend_years"], 3)
+
+    def test_trend_years_none_without_two_points(self):
+        annual = [{"year": 2025, "payable": 10.0, "ar": 50.0, "inventory": 50.0}]
+        st = compute._structure(annual)
+        self.assertIsNone(st["bargain_trend"])
+        self.assertEqual(st["bargain_trend_years"], 1)
 
 
 if __name__ == "__main__":

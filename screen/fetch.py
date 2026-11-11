@@ -20,10 +20,20 @@ CLIENT = ROOT / "providers" / "westock_client.js"
 
 sys.path.insert(0, str(ROOT / "providers"))
 import eastmoney  # noqa: E402
+from screen import codes  # noqa: E402
 
 
 class DataError(RuntimeError):
     pass
+
+
+# --quiet：重试警告属于进度噪音，静音模式下不打（失败仍会记进数据缺口）。
+QUIET = False
+
+
+def set_quiet(flag: bool) -> None:
+    global QUIET
+    QUIET = bool(flag)
 
 
 def _env_seconds_ms(name: str, default_ms: float) -> float:
@@ -65,29 +75,12 @@ def _is_retryable(exc: BaseException) -> bool:
 
 
 def normalize_code(raw: str) -> str:
-    s = str(raw or "").strip().lower()
-    # 支持 600519.SH / 600519.sh / sh600519 / 600519
-    if "." in s:
-        left, right = s.rsplit(".", 1)
-        if left.isdigit() and right in {"sh", "sz", "bj"}:
-            s = right + left
-        else:
-            s = s.replace(".", "")
-    if len(s) == 8 and s[:2] in {"sh", "sz", "bj"} and s[2:].isdigit():
-        return s
-    if not (len(s) == 6 and s.isdigit()):
-        raise ValueError(f"股票代码应为 600519 / sh600519 / 600519.SH：{raw!r}")
-    if s.startswith("920"):
-        return f"bj{s}"
-    if s.startswith(("6", "9")):
-        return f"sh{s}"
-    if s.startswith(("4", "8")):
-        return f"bj{s}"
-    return f"sz{s}"
+    """600519 / sh600519 / 600519.SH → sh600519；号段规则见 screen/codes.py。"""
+    return codes.normalize(raw)
 
 
 def six(code: str) -> str:
-    return normalize_code(code)[2:]
+    return codes.six(code)
 
 
 class WestockClient:
@@ -130,9 +123,10 @@ class WestockClient:
                 if attempt >= self.retries or not _is_retryable(exc):
                     raise
                 wait = self.retry_wait + random.uniform(0, 5)
-                print(f"[warn] {tool} 失败：{exc}；{wait:.0f} 秒后重试"
-                      f"（{attempt + 1}/{self.retries}）",
-                      file=sys.stderr, flush=True)
+                if not QUIET:
+                    print(f"[warn] {tool} 失败：{exc}；{wait:.0f} 秒后重试"
+                          f"（{attempt + 1}/{self.retries}）",
+                          file=sys.stderr, flush=True)
                 time.sleep(wait)
         raise last or DataError(f"{tool} 调用失败")
 
@@ -224,13 +218,3 @@ def load_bundle(path: str | Path) -> dict[str, Any]:
     if not code:
         raise DataError("采集包里没有代码")
     return {"code": normalize_code(code), "calls": calls, "errors": obj.get("errors") or []}
-
-
-def call_map(calls: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """同名工具只保留最后一条；估值分页由 compute 自己合并。"""
-    out: dict[str, dict[str, Any]] = {}
-    for call in calls:
-        tool = call.get("tool")
-        if tool:
-            out[tool] = call
-    return out

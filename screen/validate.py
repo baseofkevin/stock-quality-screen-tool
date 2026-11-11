@@ -12,6 +12,14 @@ class ScreenError(RuntimeError):
     pass
 
 
+class SkipStock(ScreenError):
+    """不满足处理条件（如上市不足 3 年），跳过而不算失败。
+
+    继承 ScreenError 是为了让「忘了接住」的地方仍按失败处理，
+    但调用方应显式区分：批量写「跳过：…」、单股票模式退出码 0。
+    """
+
+
 def _finite(value: Any) -> bool:
     try:
         return value is None or math.isfinite(float(value))
@@ -23,8 +31,12 @@ def validate(data: dict[str, Any]) -> None:
     meta = data.get("meta") or {}
     if not meta.get("code"):
         raise ScreenError("缺少股票代码")
-    if not data.get("financials", {}).get("annual"):
+    annual = data.get("financials", {}).get("annual") or []
+    if not annual:
         raise ScreenError("没有可用年报，无法计算质量分")
+    # 年报数判定必须早于 Q 判定，否则会被「质量分无法计算」抢先，丢掉真正的原因。
+    if len(annual) < config.MIN_ANNUAL_YEARS:
+        raise SkipStock(f"上市不足 {config.MIN_ANNUAL_YEARS} 年（仅 {len(annual)} 个年报），本工具不处理")
     q = data.get("quality") or {}
     v = data.get("valuation_score") or {}
     if q.get("score") is None and not q.get("not_applicable"):

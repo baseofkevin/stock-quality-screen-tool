@@ -7,15 +7,59 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date
+from pathlib import Path
 from typing import Any
+
+# 本文件既被 `import eastmoney`（fetch 把 providers/ 塞进 sys.path）导入，
+# 也被 `from providers.eastmoney import ...`（测试）导入，两种情况下项目根都不一定在路径里。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from screen.codes import secucode  # noqa: E402
 
 API = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+
+# 跨线程节流：批量 4 线程 × 每只 3 个报表（估值还要翻页）会瞬间打出十几个请求，
+# 被限频的后果不是报错而是「数据缺口」——报告照出，第三节却整段没有估值序列。
+# 腾讯那边有闸门（fetch._throttle），东财这边以前没有。默认 400ms，
+# 可用 EASTMONEY_GLOBAL_INTERVAL_MS 调整，设 0 关闭。
+def _env_interval() -> float:
+    try:
+        return max(0.0, float(os.environ.get("EASTMONEY_GLOBAL_INTERVAL_MS", "400")) / 1000.0)
+    except (TypeError, ValueError):
+        return 0.4
+
+
+GLOBAL_INTERVAL = _env_interval()
+_LOCK = threading.Lock()
+_NEXT_CALL_AT = 0.0
+
+
+def set_interval_ms(value: float) -> None:
+    """测试与调试用：改全局间隔（毫秒，<=0 关闭节流）并清空下一次的排期。"""
+    global GLOBAL_INTERVAL, _NEXT_CALL_AT
+    GLOBAL_INTERVAL = max(0.0, float(value) / 1000.0)
+    _NEXT_CALL_AT = 0.0
+
+
+def _throttle() -> None:
+    """等够间隔再发下一个请求；多线程共用同一个排期。"""
+    global _NEXT_CALL_AT
+    if GLOBAL_INTERVAL <= 0:
+        return
+    with _LOCK:
+        now = time.monotonic()
+        wait = _NEXT_CALL_AT - now
+        if wait > 0:
+            time.sleep(wait)
+        _NEXT_CALL_AT = time.monotonic() + GLOBAL_INTERVAL
 
 
 class EastMoneyError(RuntimeError):
@@ -23,19 +67,13 @@ class EastMoneyError(RuntimeError):
 
 
 def to_secucode(code: str) -> str:
-    """sh600519 / 600519 / 600519.SH → 600519.SH。"""
-    raw = str(code or "").strip().upper().replace(".", "")
-    if len(raw) == 8 and raw[:2] in {"SH", "SZ", "BJ"}:
-        raw = raw[2:]
-    if not (len(raw) == 6 and raw.isdigit()):
-        raise ValueError(f"代码格式错误：{code!r}")
-    if raw.startswith("920"):
-        return f"{raw}.BJ"
-    if raw.startswith(("6", "9")):
-        return f"{raw}.SH"
-    if raw.startswith(("4", "8")):
-        return f"{raw}.BJ"
-    return f"{raw}.SZ"
+    """sh600519 / 600519 / 600519.SH → 600519.SH；规则见 screen/codes.py。
+
+    以前这里自己判号段，且 `600519.SH` 会被 replace('.','') 拆坏、直接抛错；
+    统一到 codes.py 后这种写法也认了。
+    """
+    return secucode(code)
+
 
 
 def _get(params: dict[str, Any], timeout: float = 25.0, retries: int = 2) -> dict[str, Any]:
@@ -43,6 +81,7 @@ def _get(params: dict[str, Any], timeout: float = 25.0, retries: int = 2) -> dic
     last: Exception | None = None
     for attempt in range(retries + 1):
         try:
+            _throttle()
             req = urllib.request.Request(url, headers={"User-Agent": UA, "Referer": "https://data.eastmoney.com/"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = resp.read().decode("utf-8", "replace")

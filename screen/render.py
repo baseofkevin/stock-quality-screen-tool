@@ -4,43 +4,29 @@ from __future__ import annotations
 
 import html
 import statistics
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import config
+from screen.fmt import num_sep as n, pct, yi
 
 TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "report.html"
+
+
+@lru_cache(maxsize=1)
+def _template_text() -> str:
+    """模板只读一次：批量 155 只股票以前要读 155 次盘，纯属白花。
+
+    缓存的是文件内容，改了 templates/report.html 需要重开进程（开发时方便：
+    tests/test_render.py 用 cache_clear() 复位）。
+    """
+    return TEMPLATE.read_text(encoding="utf-8")
 
 
 def esc(value: Any) -> str:
     return html.escape(str(value if value is not None else ""), quote=True)
 
-
-def n(value: Any, digits: int = 2) -> str:
-    if value is None:
-        return "—"
-    try:
-        return f"{float(value):,.{digits}f}"
-    except (TypeError, ValueError):
-        return esc(value)
-
-
-def pct(value: Any, digits: int = 1) -> str:
-    if value is None:
-        return "—"
-    try:
-        return f"{float(value):.{digits}f}%"
-    except (TypeError, ValueError):
-        return esc(value)
-
-
-def yi(value: Any, digits: int = 2) -> str:
-    if value is None:
-        return "—"
-    try:
-        return f"{float(value) / 1e8:,.{digits}f}"
-    except (TypeError, ValueError):
-        return esc(value)
 
 
 def _status(status: str) -> str:
@@ -56,7 +42,7 @@ def _bargain_verdict(bargain: float | None, cl_ratio: float | None) -> str:
         return "两头通吃"
     if bargain >= config.PAYABLE_SLIP_WEAK:
         return "正常占款"
-    if cl_ratio is not None and cl_ratio >= 2.0:
+    if cl_ratio is not None and cl_ratio >= config.CL_RATIO_STRONG:
         return "预收型强势"
     return "几乎不占供应商款"
 
@@ -75,7 +61,10 @@ def _structure_line(structure: dict[str, Any], financial: bool = False) -> str:
     if bargain is None:
         parts.append("货款占用 应付/（应收+票据+存货）= —")
     else:
-        trend_txt = "—" if trend is None else f"三年 {trend:+.3f}"
+        # 年数取实际跨度，不写死「三年」：窗口是 5 年时那样写会把 5 年的变化说成 3 年
+        years = structure.get("bargain_trend_years")
+        span = f"近 {years} 年" if years else "期间"
+        trend_txt = "—" if trend is None else f"{span} {trend:+.3f}"
         parts.append(f"货款占用 应付/（应收+票据+存货）= {bargain:.2f}（{trend_txt}）")
     if cl_ratio is not None:
         yoy_txt = "—" if cl_yoy is None else f"{cl_yoy:+.1f}%"
@@ -89,9 +78,12 @@ def _structure_line(structure: dict[str, Any], financial: bool = False) -> str:
 
 
 def _score_class(value: float | None) -> str:
+    """分数条配色：门槛在 config.SCORE_BAR_GOOD / SCORE_BAR_BAD，别在这里写死 65/45。"""
     if value is None:
         return ""
-    return "good" if value >= 65 else ("bad" if value < 45 else "")
+    if value >= config.SCORE_BAR_GOOD:
+        return "good"
+    return "bad" if value < config.SCORE_BAR_BAD else ""
 
 
 def _bar(value: float | None, cls: str = "") -> str:
@@ -313,17 +305,40 @@ def _val_items(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
-def _valuation_position(metrics: dict[str, Any]) -> str:
-    """那一段话的前半句：每个指标的分位 + 档名（一眼看出谁贴着历史上下沿）。"""
+def _sample_points(sample: dict[str, Any] | None) -> int:
+    """分位样本的周数；拿不到就当 0。"""
+    try:
+        return int((sample or {}).get("points") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sample_short(sample: dict[str, Any] | None) -> bool:
+    """样本不足 1 年 → 不给档位结论（10 周的序列也能凑出「历史顶部」）。"""
+    points = _sample_points(sample)
+    return 0 < points < config.VAL_MIN_SAMPLE_WEEKS
+
+
+def _valuation_position(metrics: dict[str, Any],
+                        sample: dict[str, Any] | None = None) -> str:
+    """那一段话的前半句：每个指标的分位 + 档名（一眼看出谁贴着历史上下沿）。
+
+    样本不足 1 年时只报分位、不带档名——历史太短，"历史底部/顶部"没有意义。
+    """
+    items = _val_items(metrics)
+    if _sample_short(sample):
+        return "、".join(f"{x['name']} <b>{x['value']:.0f}%</b>" for x in items)
     return "、".join(
-        f"{x['name']} <b>{x['value']:.0f}%</b>（{x['band']}）" for x in _val_items(metrics)
+        f"{x['name']} <b>{x['value']:.0f}%</b>（{x['band']}）" for x in items
     )
 
 
-def _valuation_verdict(metrics: dict[str, Any]) -> str:
+def _valuation_verdict(metrics: dict[str, Any],
+                       sample: dict[str, Any] | None = None) -> str:
     """把分位表读成一句结论。
 
     规则（METHODOLOGY.md §5「仅展示、不进入 V 的估值指标」）：
+    - 样本不足 `config.VAL_MIN_SAMPLE_WEEKS`（约 1 年）时只提示样本量、不上档位；
     - 档位取三个分位的**中位数**，不用平均——平均会被单个极端值拽走；
     - 跨度（最高 − 最低）≤ VAL_SPREAD_TOL 时只说一句结论；
     - 跨度更大时点名最低/最高的两个指标，并说明「哪一端更便宜」。
@@ -332,22 +347,28 @@ def _valuation_verdict(metrics: dict[str, Any]) -> str:
     items = sorted(_val_items(metrics), key=lambda x: x["value"])
     if len(items) < 2:
         return ""
+    if _sample_short(sample):
+        return (f"分位样本仅 {_sample_points(sample)} 周（不足 "
+                f"{config.VAL_MIN_SAMPLE_WEEKS} 周），历史太短，分位仅供参考，"
+                f"不给档位结论。")
     low, high = items[0], items[-1]
     # 奇数个取正中间；两个指标时取较高的一侧定性（偏保守）
     med = items[len(items) // 2] if len(items) % 2 else items[-1]
     mid = statistics.median([x["value"] for x in items])
     spread = high["value"] - low["value"]
     count = "三个口径" if len(items) == 3 else "两个口径"
+    points = _sample_points(sample)
+    sample_note = f"（样本 {points} 周）" if points else ""
 
     if spread <= config.VAL_SPREAD_TOL:
         return (f"{count}位置接近（跨度 {spread:.0f}pp），中位落在{med['band']}："
-                f"<b>估值{med['verdict']}</b>。")
+                f"<b>估值{med['verdict']}</b>{sample_note}。")
     relation = "明显比" if spread >= config.VAL_SPREAD_STRONG else "比"
     return (f"{count}拉得比较开（{low['name']} {low['value']:.0f}% 在{low['band']}、"
             f"{high['name']} {high['value']:.0f}% 在{high['band']}，"
             f"跨度 {spread:.0f}pp）：按中位 {mid:.0f}% 算"
             f"<b>估值{med['verdict']}</b>，但{VAL_SIDE[low['name']]}{relation}"
-            f"{VAL_SIDE[high['name']]}便宜，位置本身给不出统一结论。")
+            f"{VAL_SIDE[high['name']]}便宜，位置本身给不出统一结论{sample_note}。")
 
 
 def _valuation_charts(chart: dict[str, Any]) -> str:
@@ -487,6 +508,18 @@ def _section_business(data: dict[str, Any]) -> str:
 </section>"""
 
 
+def _fatal_rule_text() -> str:
+    """第二节末段的「致命项只有这四条」：数字全部来自 config，与 score._fatal() 同源。
+
+    以前这段话是手写的，改 FATAL 阈值（比如商誉 50% → 60%）报告里也不会跟着变。
+    新增第五条致命项时记得同步这句的「四条」。
+    """
+    return (f"致命项仍只有净资产为负、利息保障 &lt;{config.INTEREST_COVER_FATAL:g}、"
+            f"商誉 &gt;{config.GOODWILL_EQUITY_FATAL * 100:.0f}%、"
+            f"连续 {config.FCF_NEGATIVE_YEARS} 年经营现金流为负且净负债/EBIT "
+            f"&gt;{config.FATAL_NET_DEBT_EBIT:g} 四条。")
+
+
 def _section_risks(data: dict[str, Any]) -> str:
     risks = data.get("risks") or {}
     checks = risks.get("checks") or []
@@ -548,8 +581,7 @@ def _section_risks(data: dict[str, Any]) -> str:
     <tbody>{''.join(rows)}</tbody>
   </table>
   <p class="small">一票否决位（现金流质量、现金短债比）命中时会在上方「组合定性」点名，
-     但不直接改变结论；致命项仍只有净资产为负、利息保障 &lt;1、商誉 &gt;50%、
-     连续 3 年经营现金流为负且净负债/EBIT &gt;4 四条。</p>
+     但不直接改变结论；{_fatal_rule_text()}</p>
 </section>"""
 
 
@@ -557,7 +589,9 @@ def _section_valuation(data: dict[str, Any]) -> str:
     val = data.get("valuation") or {}
     metrics = val.get("metrics") or {}
     sample = val.get("sample") or {}
-    as_of = ((data.get("meta") or {}).get("price_date") or sample.get("end") or "—")
+    as_of = ((data.get("meta") or {}).get("price_date") or sample.get("end") or "")
+    # 没有估值序列时不能印「全篇估值口径统一为 — 收盘」，整段说明也改用短版（P2-1）
+    has_series = bool(as_of)
     mrows = []
     for key in ("pe", "pb", "ps"):
         m = metrics.get(key)
@@ -582,10 +616,29 @@ def _section_valuation(data: dict[str, Any]) -> str:
     if start_year.isdigit():
         since_note = f"{start_year} 年以来周频"
     valuation_charts = _valuation_charts(val.get("chart") or {})
+    if has_series:
+        intro_html = (
+            f'<p class="small">样本：{sample_note}。<b>全篇估值口径统一为 {esc(as_of)} 收盘</b>'
+            "：下表“最新收盘”、下图最后一个点、机构目标价空间、现金底线里的市值，"
+            f"用的是同一个收盘价。上表为 {since_note}分位；下图为近 "
+            f"{config.VALUATION_YEARS} 年周频走势"
+            f"（可用历史不足 {config.VALUATION_YEARS} 年时按全部可用历史），PE 为负时断线。"
+            "历史分位、走势图与下方那句位置判断都只展示，不进入 V 分。</p>"
+        )
+    else:
+        reason = "东财历史估值接口没有返回数据"
+        gaps = data.get("data_gaps") or []
+        if any(x.get("tool") == "RPT_VALUEANALYSIS_DET" for x in gaps):
+            reason = "东财历史估值接口取数失败（见上方取数缺口）"
+        intro_html = (
+            f'<p class="small"><b>无估值序列（无口径日）</b>：{esc(reason)}。'
+            "本节的分位表、走势图、估值位置都不显示；"
+            "价格按上一交易日收盘或实时价计算，机构目标价空间与现金底线里的市值同源。</p>"
+        )
     # 分位表只给数字，读者仍要自己判断「18% 算便宜吗」——这里把它读成一句话。
     # 位置来自表里同一列（同一个 percentile 字段），不再重算，避免出现两套数字。
-    position = _valuation_position(metrics)
-    verdict = _valuation_verdict(metrics)
+    position = _valuation_position(metrics, sample)
+    verdict = _valuation_verdict(metrics, sample)
     verdict_html = ""
     if position and verdict:
         verdict_html = (f'<p class="small"><b>估值位置</b>：{position}　——　{verdict}</p>')
@@ -669,12 +722,17 @@ def _section_valuation(data: dict[str, Any]) -> str:
 
     anchor_rows = []
     for anchor in cv.get("anchors") or []:
+        times = anchor.get("cap_times")
+        margin_cell = pct(anchor.get("margin_pct"))
+        if times is not None and times > 1:
+            # 市值高于底线时，百分比会到 −488% 这种量级；同格补几倍更直观
+            margin_cell += f'<span class="small">（市值 {times:.1f} 倍）</span>'
         anchor_rows.append(
             "<tr>"
             f"<td>{esc(anchor.get('years'))} 年</td>"
             f"<td>{_money(anchor.get('value_yi'))}</td>"
             f"<td>{n(anchor.get('per_share')) + ' 元' if anchor.get('per_share') is not None else '—'}</td>"
-            f"<td>{pct(anchor.get('margin_pct'))}</td>"
+            f"<td>{margin_cell}</td>"
             "</tr>"
         )
     anchor_body = "".join(anchor_rows) or (
@@ -682,6 +740,8 @@ def _section_valuation(data: dict[str, Any]) -> str:
     anchor_html = (
         "<table><thead><tr><th>年限 N</th><th>底线价值</th><th>每股底线</th>"
         f"<th>安全边际</th></tr></thead><tbody>{anchor_body}</tbody></table>"
+        '<p class="small">安全边际 =（底线价值 − 总市值）÷ 底线价值：市值高于底线时为负，'
+        "分母是底线，所以会小于 −100%；右侧括号是「市值 ÷ 底线」，看差几倍更直观。</p>"
     )
 
     flags = data.get("flags") or []
@@ -700,15 +760,13 @@ def _section_valuation(data: dict[str, Any]) -> str:
   <h2>三、企业估值与机构预期</h2>
   {gaps_html}
   <h3>PE/PB/PS 历史分位及走势图</h3>
-  <p class="small">样本：{sample_note}。<b>全篇估值口径统一为 {esc(as_of)} 收盘</b>：下表“最新收盘”、
-     下图最后一个点、机构目标价空间、现金底线里的市值，用的是同一个收盘价。
-     上表为 {since_note}分位；下图为近 {config.VALUATION_YEARS} 年周频走势
-     （可用历史不足 {config.VALUATION_YEARS} 年时按全部可用历史），PE 为负时断线。
-     历史分位、走势图与下方那句位置判断都只展示，不进入 V 分。</p>
+  {intro_html}
   <table>
     <thead><tr><th>指标</th><th>最新收盘</th><th>历史分位</th><th>区间</th><th>样本点数</th></tr></thead>
     <tbody>{''.join(mrows) or '<tr><td colspan="5">暂无历史估值数据</td></tr>'}</tbody>
   </table>
+  <p class="small">「最新收盘」显示 — 表示口径日该指标为负或缺失（亏损或无数值）：
+     此时不计分位、不进 V 分，也不退回历史最后一个正值。</p>
 
   {valuation_charts}
   {verdict_html}
@@ -733,6 +791,57 @@ def _section_valuation(data: dict[str, Any]) -> str:
      安全边际 =（底线价值 − 总市值）÷ 底线价值；正数表示市值低于底线。</p>
   {anchor_html}
 </section>"""
+
+
+def _matrix_text() -> str:
+    """把 config.DECISION_MATRIX 翻成「Q≥75：V≥65 推荐买入，50~65 等价格……」这样的几行。
+
+    以前这段是手写的，和 score._decision() 里的门槛各写一遍：改一处就「说一套、算一套」。
+    现在两边读同一张表，V 的每段区间由相邻两个 v_min 相减得来，不需要再手抄数字。
+    """
+    lines = []
+    prev_q: float | None = None
+    for tier in config.DECISION_MATRIX:
+        q_min = tier["q_min"]
+        head = f"Q≥{q_min:g}" if prev_q is None else f"Q{q_min:g}~{prev_q:g}"
+        parts, upper = [], None
+        for rule in tier["rules"]:
+            v_min = rule["v_min"]
+            if v_min is None:
+                parts.append(f"&lt;{upper:g} {rule['text']}")
+            elif upper is None:
+                parts.append(f"V≥{v_min:g} {rule['text']}")
+            else:
+                parts.append(f"{v_min:g}~{upper:g} {rule['text']}")
+            upper = v_min
+        lines.append(f"{head}：" + "，".join(parts) + "；")
+        prev_q = q_min
+    lines.append(f"Q&lt;{config.QUALITY_HARD_FLOOR:g}：回避，禁止买入；Q 或 V 缺失 → 数据不足。")
+    return "\n    ".join(lines)
+
+
+def _grade_text() -> str:
+    """「优秀 ≥85 / 良好 75~85 / ...」由 config.QUALITY_GRADES 生成。"""
+    grades = config.QUALITY_GRADES
+    parts = []
+    for i, (cut, label) in enumerate(grades):
+        if i == 0:
+            parts.append(f"{label} ≥{cut:g}")
+        elif i == len(grades) - 1:
+            parts.append(f"{label} &lt;{grades[i - 1][0]:g}")
+        else:
+            parts.append(f"{label} {cut:g}~{grades[i - 1][0]:g}")
+    return " / ".join(parts)
+
+
+def _weight_text(weights: dict[str, float], labels: dict[str, str]) -> str:
+    return "、".join(f"{labels[k]} {w:g}" for k, w in weights.items())
+
+
+def _v_formula_text() -> str:
+    """「机构目标价空间 40% + 预测 PE 相对当前 PE 20% + 预期未来净利增速 40%」"""
+    return " + ".join(f"{config.VALUATION_WEIGHT_TEXT[k]} {w:g}%"
+                      for k, w in config.VALUATION_WEIGHTS.items())
 
 
 def _section_score(data: dict[str, Any]) -> str:
@@ -810,11 +919,7 @@ def _section_score(data: dict[str, Any]) -> str:
             f'Q 数据覆盖 {pct(dq.get("q_coverage"))}。\n'
             '     可买还需满足：机构覆盖≥3 家、Q 覆盖≥80%、关键风险检查无缺失。</p>\n'
             '  <div class="small">\n'
-            '    决策规则（质量调整）：Q≥75：V≥65 推荐买入，50~65 等价格，35~50 偏贵，&lt;35 太贵；\n'
-            '    Q65~75：V≥80 推荐，70~80 可买，50~70 观察，&lt;50 回避；\n'
-            '    Q55~65：V≥75 小仓买入，50~75 观察，&lt;50 回避；\n'
-            '    Q45~55：V≥80 小仓试错，65~80 观察，&lt;65 回避；\n'
-            '    Q&lt;45：回避，禁止买入；Q 或 V 缺失 → 数据不足。\n'
+            f'    决策规则（质量调整）：{_matrix_text()}\n'
             '    一致性闸门：第二节命中 ≥2 项、或现金流质量/现金短债比命中 → 买入类降为回避；\n'
             '    提示 ≥2 项、或命中 1 项 → 买入类降为“观察，第二节有信号”。\n'
             '  </div>'
@@ -823,12 +928,12 @@ def _section_score(data: dict[str, Any]) -> str:
 <section>
   <h2>四、综合评分</h2>
   <div class="grid">
-    <div class="metric"><div class="k">质量分 Q</div><div class="v">{n(qs, 1)}</div><div class="note">{esc(q.get('grade'))} · 风险检查 {risk_known}/{risk_applicable} 已知</div>
+    <div class="metric"><div class="k">质量分 Q</div><div class="v" data-metric="q">{n(qs, 1)}</div><div class="note">{esc(q.get('grade'))} · 风险检查 {risk_known}/{risk_applicable} 已知</div>
       {f'<div class="note">{esc(consist_note)}</div>' if consist_note else ''}
       {_bar(qs, _score_class(qs))}</div>
-    <div class="metric"><div class="k">估值分 V</div><div class="v">{n(vs, 1)}</div><div class="note">{esc(v.get('grade'))}</div>
+    <div class="metric"><div class="k">估值分 V</div><div class="v" data-metric="v">{n(vs, 1)}</div><div class="note">{esc(v.get('grade'))}</div>
       {_bar(vs, _score_class(vs))}</div>
-    <div class="metric"><div class="k">结论</div><div class="v" style="font-size:19px">{esc(decision.get('label'))}</div>
+    <div class="metric"><div class="k">结论</div><div class="v" data-metric="conclusion" style="font-size:19px">{esc(decision.get('label'))}</div>
       <div class="note">{esc(decision.get('reason'))}</div></div>
   </div>
   <h3>质量分构成（五个维度，第二节不参与打分）</h3>
@@ -838,11 +943,11 @@ def _section_score(data: dict[str, Any]) -> str:
      当前风险检查：{risk_known}/{risk_applicable} 已知，命中 {risk_hits} 项、提示 {risk_watches} 项、
      数据不足 {risk_unknown} 项。</p>
   <table><thead><tr><th>维度</th><th>得分</th><th>数据覆盖</th></tr></thead><tbody>{''.join(qrows)}</tbody></table>
-  <p class="small">分档（优秀 ≥85 / 良好 75~85 / 中等偏上 65~75 / 中等 55~65 / 偏弱 45~55 / 差 &lt;45）
+  <p class="small">分档（{_grade_text()}）
      只是标签，<b>不改变</b>下面的结论矩阵；矩阵只认 Q 的数值。</p>
   <h3>估值分构成（机构口径）</h3>
   <table><thead><tr><th>维度</th><th>得分 / 100</th><th>原始值</th></tr></thead><tbody>{''.join(vrows)}</tbody></table>
-  <p class="small">V 分 = 目标价空间 40% + 预测 PE 20% + 未来净利增速 40%；缺失项按可用权重归一。
+  <p class="small">V 分 = {_v_formula_text()}；缺失项按可用权重归一。
      无机构覆盖时 V 不计算，但 Q 分正常展示。</p>
 {tail_html}
   <p class="small">机构预期直接决定 V 分；评级分布只展示，不参与打分。</p>
@@ -876,13 +981,17 @@ def render_html(data: dict[str, Any]) -> str:
     price = meta.get("price")
     price_text = f"¥ {n(price)}" if price is not None else "价格未取得"
     title = f"{meta.get('name')}（{meta.get('code')}）企业质量初筛"
+    # 没有东财估值序列时 price_date 为空：不能印成「估值口径 — 收盘」
+    price_date = meta.get("price_date")
+    asof_text = (f"估值口径 {price_date} 收盘" if price_date
+                 else "无估值序列（无口径日）")
     content = f"""
 <div class="hero">
   <h1>{esc(meta.get('name'))} <span style="font-size:15px;opacity:.75">{esc(meta.get('code'))}</span>
     <span class="badge {esc(key)}">{esc(decision.get('label'))}</span></h1>
   <div class="sub">{esc(meta.get('industry'))} · 企业质量初筛 · 只做定量判断</div>
   <div class="price">{price_text}<span style="font-size:13px;font-weight:400;opacity:.8;margin-left:10px">市值 {n(meta.get('market_cap_yi'))} 亿元 · {esc(meta.get('price_basis') or '实时价')}</span></div>
-  <div class="meta">估值口径 {esc(meta.get('price_date') or '—')} 收盘 · 数据快照 {esc(meta.get('quote_date') or '—')} · 最新报告期 {esc(meta.get('latest_date') or '—')}</div>
+  <div class="meta">{esc(asof_text)} · 数据快照 {esc(meta.get('quote_date') or '—')} · 最新报告期 {esc(meta.get('latest_date') or '—')}</div>
 </div>
 {_section_business(data)}
 {_section_risks(data)}
@@ -890,12 +999,13 @@ def render_html(data: dict[str, Any]) -> str:
 {_section_score(data)}
 {_section_tracking(data)}
 """
-    template = TEMPLATE.read_text(encoding="utf-8")
+    template = _template_text()
     sources = ("腾讯自选股 WeStock：data_profile / data_quote / data_finance / data_consensus / data_rating；"
                "东方财富：RPT_F10_FN_MAINOP 产品分部、RPT_VALUEANALYSIS_DET 历史估值、"
                "RPT_F10_FINANCE_GCASHFLOW 资本支出。")
-    method = ("质量分 Q：资本回报 30、现金创造力 25、资产负债表 20、成长与稳定 15、会计质量 10；"
-              "估值分 V：机构目标价空间 40、预测 PE 相对当前 PE 20、未来净利增速 40。"
+    # 权重说明由 config 拼出来：以前这段是手写的 30/25/20/15/10，改权重后报告照旧印旧数字
+    method = (f"质量分 Q：{_weight_text(config.QUALITY_WEIGHTS, config.QUALITY_GROUP_LABELS)}；"
+              f"估值分 V：{_weight_text(config.VALUATION_WEIGHTS, config.VALUATION_WEIGHT_TEXT)}。"
               "历史分位、FCF 与现金底线只展示，不进入 V。权重与阈值见 config.py。")
     limits = ("机构覆盖不足 3 家、Q 数据覆盖低于 80%、关键风险检查缺失时，不给出可买；"
               "金融股与强周期股不适合直接套用 FCF。现金扣除块只展示，"

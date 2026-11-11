@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
-"""批量产物：CSV 读写、结论反解、XLSX、导航页。"""
-import os
-import stat
+"""批量产物：CSV 读取、结论反解、XLSX、导航页。"""
 import sys
 import tempfile
 import unittest
@@ -15,7 +13,7 @@ from screen.batch import (CODE_COLUMN_CANDIDATES, EASTMONEY_COLUMN,
                           LINK_COLUMN, SCORE_COLUMN, CsvError,
                           eastmoney_link_cell, eastmoney_url,
                           ensure_result_columns, link_target, read_csv_table,
-                          report_link_cell, report_uri, write_csv_table)
+                          report_link_cell, report_uri)
 from screen.index_html import write_index_html
 from screen.render import render_html
 from screen.summary import SummaryError, extract_score_summary
@@ -64,41 +62,24 @@ class CsvReadTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = self._csv(td, "代码,名称\n600519,贵州茅台\n", encoding="gb18030")
             table = read_csv_table(path)
-            self.assertEqual(table.encoding, "gb18030")
             self.assertEqual(table.rows[0]["名称"], "贵州茅台")
 
-    def test_lineterminator_detected(self):
+    def test_crlf_and_bom_are_read_transparently(self):
+        """读入只关心代码列，BOM / CRLF 不该影响解析（也不再需要回写保留它们）。"""
         with tempfile.TemporaryDirectory() as td:
-            crlf = self._csv(td, "代码,名称\r\n600519,贵州茅台\r\n")
-            self.assertEqual(read_csv_table(crlf).lineterminator, "\r\n")
-            lf = Path(td) / "lf.csv"
-            lf.write_bytes("代码,名称\n600519,贵州茅台\n".encode())
-            self.assertEqual(read_csv_table(lf).lineterminator, "\n")
+            path = Path(td) / "rows.csv"
+            path.write_bytes("\ufeff代码,名称\r\n600519,贵州茅台\r\n000001,平安银行\r\n".encode())
+            table = read_csv_table(path)
+            self.assertEqual(table.code_column, "代码")
+            self.assertEqual([r["名称"] for r in table.rows], ["贵州茅台", "平安银行"])
 
     def test_missing_file(self):
         with self.assertRaises(CsvError):
             read_csv_table(Path(tempfile.gettempdir()) / "不存在.csv")
 
 
-class CsvWriteTest(unittest.TestCase):
-    def test_roundtrip_keeps_bom_crlf_and_extra_columns(self):
-        with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / "rows.csv"
-            path.write_bytes("\ufeff代码,名称,备注\r\n600519,贵州茅台,保留\r\n".encode())
-            table = read_csv_table(path)
-            ensure_result_columns(table)
-            table.rows[0][SCORE_COLUMN] = "可买"
-            table.rows[0][LINK_COLUMN] = report_link_cell(Path(td) / "报告.html")
-            write_csv_table(table)
-
-            raw = path.read_bytes()
-            self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
-            self.assertIn(b"\r\n", raw)
-            row = support.read_csv_rows(path)[0]
-            self.assertEqual(row["名称"], "贵州茅台")
-            self.assertEqual(row["备注"], "保留")
-            self.assertEqual(row[SCORE_COLUMN], "可买")
-            self.assertTrue(row[LINK_COLUMN].startswith('=HYPERLINK("file:///'))
+class ResultColumnsTest(unittest.TestCase):
+    """结果列只加在内存表里：批量模式不写 CSV，导航页和 Excel 用它展示。"""
 
     def test_ensure_result_columns_is_idempotent(self):
         with tempfile.TemporaryDirectory() as td:
@@ -112,29 +93,6 @@ class CsvWriteTest(unittest.TestCase):
             for name in (SCORE_COLUMN, LINK_COLUMN, EASTMONEY_COLUMN):
                 self.assertEqual(table.fieldnames.count(name), 1)
 
-    def test_keeps_file_permission_and_leaves_no_temp_file(self):
-        with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / "rows.csv"
-            path.write_bytes("代码,名称\n600519,贵州茅台\n".encode())
-            os.chmod(path, 0o640)
-            table = read_csv_table(path)
-            ensure_result_columns(table)
-            write_csv_table(table)
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
-            leftovers = [p.name for p in Path(td).iterdir() if p.name.endswith(".tmp")]
-            self.assertEqual(leftovers, [])
-
-    def test_gb18030_is_written_back(self):
-        with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / "rows.csv"
-            path.write_bytes("代码,名称\n600519,贵州茅台\n".encode("gb18030"))
-            table = read_csv_table(path)
-            ensure_result_columns(table)
-            table.rows[0][SCORE_COLUMN] = "观察"
-            write_csv_table(table)
-            text = path.read_bytes().decode("gb18030")
-            self.assertIn("观察", text)
-            self.assertIn("贵州茅台", text)
 
 
 class LinkHelperTest(unittest.TestCase):
@@ -247,6 +205,32 @@ class IndexHtmlTest(unittest.TestCase):
             self.assertIn("https://quote.eastmoney.com/sh600519.html", text)
             self.assertIn("贵州茅台", text)
 
+    def test_skip_is_grey_unknown_badge(self):
+        """「跳过：上市不足 3 年」没有结论，归灰色 unknown 徽标，不能显示成观察类。"""
+        from screen.batch import SKIP_SCORE_TEXT
+        with tempfile.TemporaryDirectory() as td:
+            table, out = self._table(td)
+            table.rows[1][SCORE_COLUMN] = SKIP_SCORE_TEXT
+            index = write_index_html(table, out)
+            text = index.read_text(encoding="utf-8")
+            self.assertIn(f'class="badge unknown">{SKIP_SCORE_TEXT}<', text)
+            self.assertNotIn(f'class="badge watch">{SKIP_SCORE_TEXT}<', text)
+
+    def test_nav_filename_follows_csv_stem(self):
+        """导航页文件名 = 输入 CSV 主名（`季度清单.csv` → `季度清单.html`）。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "reports"
+            out.mkdir()
+            csv_path = Path(td) / "季度清单.csv"
+            csv_path.write_bytes("\ufeff代码,名称\r\n600519,贵州茅台\r\n".encode())
+            table = read_csv_table(csv_path)
+            ensure_result_columns(table)
+            table.rows[0][SCORE_COLUMN] = "观察"
+            nav = write_index_html(table, out)
+            self.assertEqual(nav.name, "季度清单.html")
+            self.assertEqual(nav.parent, out.resolve())
+            self.assertFalse((out / "index.html").exists())
+
     def test_code_and_name_are_escaped(self):
         with tempfile.TemporaryDirectory() as td:
             table, out = self._table(td)
@@ -295,6 +279,34 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(summary.quality, "80.5")
         self.assertEqual(summary.valuation, "—")
         self.assertEqual(summary.conclusion, "观察 & 等待")
+
+    def test_marker_beats_label_text(self):
+        """标记位说了算：小标题改成别的字也能取到（0.9.8 的结构解耦）。"""
+        html = ('<h2>四、评分汇总</h2>'
+                '<div class="k">质量得分</div><div class="v" data-metric="q">77.7</div>'
+                '<div class="k">估值得分</div><div class="v" data-metric="v">55.5</div>'
+                '<div class="k">最终结论</div><div class="v" data-metric="conclusion">可买</div>')
+        summary = extract_score_summary(html)
+        self.assertEqual((summary.quality, summary.valuation, summary.conclusion),
+                         ("77.7", "55.5", "可买"))
+
+    def test_marker_survives_heading_rewrite_in_real_report(self):
+        """真实报告把第二节标题名改了以后，批量提取不能变成「评分提取失败」。"""
+        html = render_html(support.scored_data())
+        self.assertIn('data-metric="q"', html)
+        rewritten = html.replace("四、综合评分", "四、评分")
+        summary = extract_score_summary(rewritten)
+        self.assertEqual(summary.conclusion, support.scored_data()["decision"]["label"])
+
+    def test_legacy_report_without_marker_still_parses(self):
+        """0.9.7 及更早生成的报告没有标记位，靠小标题文字回退解析。"""
+        html = ('<h2>四、综合评分</h2>'
+                '<div class="k">质量分 Q</div><div class="v">62.7</div>'
+                '<div class="k">估值分 V</div><div class="v">55.1</div>'
+                '<div class="k">结论</div><div class="v">观察</div></section>')
+        summary = extract_score_summary(html)
+        self.assertEqual((summary.quality, summary.valuation, summary.conclusion),
+                         ("62.7", "55.1", "观察"))
 
 
 class CodeColumnCandidatesTest(unittest.TestCase):

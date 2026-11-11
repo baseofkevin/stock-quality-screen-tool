@@ -190,8 +190,30 @@ class SectionValuationTest(unittest.TestCase):
         self.assertIn("不适用：金融股不适用", section)
         self.assertEqual(section.count("<td colspan=\"4\">"), 1)
 
+    def test_anchor_shows_market_cap_multiple(self):
+        """安全边际 −488% 读不懂：同格补「市值 N 倍」（P2-6）。"""
+        data = support.scored_data()
+        section = _section_valuation(data)
+        anchor = data["cash_valuation"]["anchors"][0]
+        self.assertIsNotNone(anchor["cap_times"])
+        self.assertIn(f"（市值 {anchor['cap_times']:.1f} 倍）", section)
+        self.assertIn("分母是底线，所以会小于 −100%", section)
+
     def test_valuation_charts_empty_state(self):
         self.assertIn("暂无估值序列数据", _valuation_charts({}))
+
+    def test_no_series_never_prints_empty_asof(self):
+        """没有估值序列时不能印「全篇估值口径统一为 — 收盘」（P2-1）。"""
+        data = support.scored_data()
+        data["valuation"] = {"metrics": {}, "sample": {}, "available": False,
+                             "chart": {"points": [], "latest": {}}}
+        data["meta"]["price_date"] = ""
+        data["meta"]["price_basis"] = "上一交易日收盘"
+        section = _section_valuation(data)
+        self.assertNotIn("— 收盘", section)
+        self.assertNotIn(" 收盘</b>", section)
+        self.assertIn("无估值序列（无口径日）", section)
+        self.assertIn("上一交易日收盘", section)
 
     def test_section_text_says_ten_year_window(self):
         section = _section_valuation(support.scored_data())
@@ -383,9 +405,25 @@ class ValuationVerdictTest(unittest.TestCase):
         data["valuation"]["metrics"]["pe"]["percentile"] = 18.2
         data["valuation"]["metrics"]["pb"]["percentile"] = 5.8
         data["valuation"]["metrics"]["ps"]["percentile"] = 17.1
+        # 夹具只有 10 个周样本，够不上档位门槛；这里把样本量抬到 1 年以上，
+        # 让本节验证的是「同源」而不是「样本太少」。
+        data["valuation"]["sample"]["points"] = config.VAL_MIN_SAMPLE_WEEKS * 5
         section = _section_valuation(data)
         self.assertIn("<td>18.2%</td>", section)
         self.assertIn("PE <b>18%</b>（下三分之一）", section)
+
+    def test_section_skips_band_when_sample_too_short(self):
+        """样本不足 1 年：只报分位，不给「历史顶部/底部」这种档位结论。"""
+        data = support.scored_data()
+        for key, value in (("pe", 91.0), ("pb", 93.0), ("ps", 95.0)):
+            data["valuation"]["metrics"][key]["percentile"] = value
+        data["valuation"]["sample"]["points"] = 10
+        section = _section_valuation(data)
+        self.assertIn("分位样本仅 10 周", section)
+        self.assertNotIn("历史顶部", section)
+        self.assertNotIn("中位落在", section)
+        self.assertIn("PE <b>91%</b>", section)           # 数字照常展示
+        self.assertNotIn("（历史顶部）", section)          # 但不再贴档名
 
     def test_section_omits_verdict_without_metrics(self):
         data = support.scored_data()
@@ -583,6 +621,36 @@ class LineChartTest(unittest.TestCase):
         html = _margin_chart({"points": points, "count": 4,
                               "start": points[0]["date"], "end": points[-1]["date"]})
         self.assertIn(f"近 {config.TREND_YEARS} 年季度毛利率和净利率趋势", html)
+
+
+class TemplateCacheTest(unittest.TestCase):
+    """模板只读一次盘：批量 155 只股票时这是 155 次多余 IO。"""
+
+    def test_template_is_read_once(self):
+        from screen import render
+        render._template_text.cache_clear()
+        first = render._template_text()
+        second = render._template_text()
+        self.assertIs(first, second)
+        info = render._template_text.cache_info()
+        self.assertEqual((info.misses, info.hits), (1, 1))
+
+    def test_render_html_reuses_cache(self):
+        from screen import render
+        render._template_text.cache_clear()
+        render_html(support.scored_data())
+        render_html(support.scored_data())
+        self.assertEqual(render._template_text.cache_info().misses, 1)
+
+
+class VersionTest(unittest.TestCase):
+    def test_package_version_follows_config(self):
+        """screen.__version__ 曾经写死 0.1.0，和报告页脚对不上。"""
+        import screen
+        self.assertEqual(screen.__version__, config.VERSION)
+
+    def test_footer_prints_same_version(self):
+        self.assertIn(f"程序版本 {config.VERSION}", render_html(support.scored_data()))
 
 
 if __name__ == "__main__":

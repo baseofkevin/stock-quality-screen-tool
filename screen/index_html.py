@@ -39,7 +39,8 @@ def _badge_class(score: str) -> str:
         return "buy"
     if "回避" in score:
         return "avoid"
-    if "数据不足" in score or "失败" in score or "无效" in score:
+    # 「跳过：上市不足 3 年」不是观察类：它没有结论，归到灰色 unknown 徽标
+    if "数据不足" in score or "失败" in score or "无效" in score or "跳过" in score:
         return "unknown"
     return "watch"
 
@@ -59,9 +60,13 @@ def _write_atomic(path: Path, text: str) -> None:
 
 
 def write_index_html(table: CsvTable, out_dir: str | Path) -> Path:
-    """在报告目录生成 index.html，按钮直接打开同目录下的 HTML。"""
+    """在报告目录生成导航页，按钮直接打开同目录下的 HTML。
+
+    导航页文件名跟输入 CSV 主名一致（`rows.csv` → `rows.html`），
+    和同名 XLSX 用同一套命名，方便一眼对上是哪份输入跑出来的。
+    """
     out = Path(out_dir).resolve()
-    target = out / "index.html"
+    target = out / f"{Path(table.path).stem}.html"
     rows_html = []
     counts = {"buy": 0, "watch": 0, "avoid": 0, "unknown": 0, "missing": 0}
 

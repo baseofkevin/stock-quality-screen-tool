@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """取数层：代码归一、采集包加载、重试与限频（screen/fetch.py）。"""
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -15,8 +17,8 @@ from unittest.mock import patch
 
 import support
 from screen import fetch
-from screen.fetch import (DataError, WestockClient, call_map, load_bundle,
-                          normalize_code, six)
+from screen.fetch import (DataError, WestockClient, load_bundle,
+                          normalize_code, set_quiet, six)
 
 
 class NormalizeCodeTest(unittest.TestCase):
@@ -98,7 +100,10 @@ class ClientRetryTest(unittest.TestCase):
     def setUp(self):
         # 重试会真的 sleep（retry_wait + random.uniform(0, 5)），测试里短路掉
         self._sleep = patch("screen.fetch.time.sleep").start()
+        # 默认静音，避免测试输出里混进 [warn]；需要验证警告的用例自己打开
+        set_quiet(True)
         self.addCleanup(patch.stopall)
+        self.addCleanup(set_quiet, False)
 
     def test_retries_then_succeeds(self):
         client = WestockClient(retries=2, retry_wait=0)
@@ -128,6 +133,26 @@ class ClientRetryTest(unittest.TestCase):
             with self.assertRaises(DataError):
                 client.call("data_quote", {"code": "sh600519"})
         self.assertEqual(mocked.call_count, 1)
+
+    def test_quiet_suppresses_retry_warning(self):
+        """--quiet 时不再打 [warn]（P2-8）；失败本身照旧抛出。"""
+        client = WestockClient(retries=1, retry_wait=0)
+        stderr = io.StringIO()
+        with patch.object(client, "_call_once", side_effect=DataError("限频")), \
+                contextlib.redirect_stderr(stderr):
+            with self.assertRaises(DataError):
+                client.call("data_quote", {"code": "sh600519"})
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_retry_warning_is_printed_by_default(self):
+        set_quiet(False)
+        client = WestockClient(retries=1, retry_wait=0)
+        stderr = io.StringIO()
+        with patch.object(client, "_call_once", side_effect=DataError("限频")), \
+                contextlib.redirect_stderr(stderr):
+            with self.assertRaises(DataError):
+                client.call("data_quote", {"code": "sh600519"})
+        self.assertIn("[warn] data_quote 失败", stderr.getvalue())
 
 
 class LoadBundleTest(unittest.TestCase):
@@ -178,19 +203,6 @@ class LoadBundleTest(unittest.TestCase):
             })
             with self.assertRaises(DataError):
                 load_bundle(path)
-
-
-class CallMapTest(unittest.TestCase):
-    def test_same_tool_keeps_last(self):
-        calls = [
-            {"tool": "data_quote", "response": {"n": 1}},
-            {"tool": "data_finance", "response": {"n": 2}},
-            {"tool": "data_quote", "response": {"n": 3}},
-        ]
-        mapped = call_map(calls)
-        self.assertEqual(mapped["data_quote"]["response"]["n"], 3)
-        self.assertEqual(mapped["data_finance"]["response"]["n"], 2)
-        self.assertEqual(set(mapped), {"data_quote", "data_finance"})
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 """CLI：参数解析、退出码、单股/批量主流程。"""
 import contextlib
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -14,9 +15,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import stock_report
 import config
 import support
-from screen.batch import (EASTMONEY_COLUMN, LINK_COLUMN, SCORE_COLUMN, link_target,
-                          read_csv_table)
+from screen.batch import (EASTMONEY_COLUMN, LINK_COLUMN, SCORE_COLUMN,
+                          SKIP_SCORE_TEXT, read_csv_table)
 from screen.fetch import DataError
+
+
+def _trim_annual(years: int):
+    """把 build_report_data 的年报窗口截到 N 年，用来构造「上市不足 3 年」。
+
+    注意在 patch 生效前求值，拿到的仍是未打补丁的原函数。
+    """
+    real = stock_report.build_report_data
+
+    def wrapped(calls, code):
+        data = real(calls, code)
+        data["financials"]["annual"] = data["financials"]["annual"][:years]
+        return data
+
+    return wrapped
 
 
 class ParserTest(unittest.TestCase):
@@ -65,14 +81,16 @@ class ParserTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     parser.parse_args(["--stock-code", "600519", flag, "a.csv"])
 
-    def test_help_says_it_rewrites_the_csv_in_place(self):
-        """这个参数名里带 csv，实际会改写传入的文件——帮助里必须写明，别让人拿只读表去跑。"""
+    def test_help_promises_the_input_csv_is_read_only(self):
+        """帮助里必须写明「输入只读、不产出 CSV」，否则没人敢指向原始选股表。"""
         # argparse 按终端宽度折行，可能把 xlsx-output 拆成「xlsx- / output」，先去空白再断言
         text = "".join(stock_report.build_parser().format_help().split())
-        self.assertIn("就地改写", text)
-        self.assertIn("HTML报告链接", text)
+        self.assertIn("输入CSV只读", text)
+        self.assertIn("也不会产出新的CSV", text)
         self.assertIn("xlsx-output", text)
         self.assertIn("--csv-input", text)
+        self.assertNotIn("就地改写", text)
+        self.assertNotIn("csv-output", text)
 
 
 class ArgumentValidationTest(unittest.TestCase):
@@ -122,6 +140,14 @@ class ScoreLineTest(unittest.TestCase):
                                          "valuation_score": {"score": None}})
         self.assertIn("估值分 V —", line)
 
+    def test_missing_quality_keeps_dash_not_not_applicable(self):
+        """Q 算不出来（非金融股）要打「—」，不能一律说「不适用」（P2-4）。"""
+        line = stock_report._score_line({"quality": {"score": None},
+                                         "valuation_score": {"score": None}})
+        self.assertIn("质量分 Q —", line)
+        self.assertNotIn("质量分 Q 不适用", line)
+        self.assertIn("估值分 V —", line)
+
 
 class SingleRunTest(unittest.TestCase):
     def test_bundle_run_writes_one_html(self):
@@ -157,6 +183,15 @@ class SingleRunTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(stdout.getvalue(), "")
 
+    def test_quiet_is_forwarded_to_fetch_layer(self):
+        """--quiet 要同步到取数层，否则重试警告还会往 stderr 打（P2-8）。"""
+        with tempfile.TemporaryDirectory() as td, \
+                patch("stock_report.set_quiet") as quiet:
+            with contextlib.redirect_stdout(io.StringIO()):
+                stock_report.main(["--stock-code", "600519", "--bundle", str(support.FIXTURE),
+                                   "--out-dir", td, "--quiet"])
+            quiet.assert_called_once_with(True)
+
     def test_missing_bundle_returns_2(self):
         with contextlib.redirect_stderr(io.StringIO()):
             rc = stock_report.main(["--stock-code", "600519",
@@ -182,6 +217,19 @@ class SingleRunTest(unittest.TestCase):
                 rc = stock_report.main(["--stock-code", "600519", "--out-dir", tempfile.gettempdir()])
         self.assertEqual(rc, 3)
 
+    def test_too_few_annuals_skips_with_exit_0(self):
+        """上市不足 3 年：跳过，不出报告，退出码 0（不是错误，也不是参数错）。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            with patch("stock_report.build_report_data", side_effect=_trim_annual(2)), \
+                    patch("stock_report.fetch_all", return_value=support.raw_bundle()), \
+                    contextlib.redirect_stdout(io.StringIO()) as stdout:
+                rc = stock_report.main(["--stock-code", "600519", "--out-dir", str(out)])
+            self.assertEqual(rc, 0)
+            self.assertEqual(list(out.iterdir()), [])          # 不落盘
+            self.assertIn("跳过", stdout.getvalue())
+            self.assertIn("上市不足 3 年", stdout.getvalue())
+
 
 class BatchRunTest(unittest.TestCase):
     def setUp(self):
@@ -198,6 +246,13 @@ class BatchRunTest(unittest.TestCase):
         support.write_csv(path, rows, ["代码", "名称"])
         return path
 
+    def _nav(self, out_dir: Path, stem: str = "rows") -> str:
+        """批量结果的可读出口是导航页（批量不再写 CSV）。"""
+        return (out_dir / f"{stem}.html").read_text(encoding="utf-8")
+
+    def _reports(self, out_dir: Path) -> list[Path]:
+        return sorted(out_dir.glob("*-企业质量初筛-*.html"))
+
     def test_xlsx_target_keeps_csv_stem_under_xlsx_output(self):
         """目标路径 = xlsx-output/<输入 CSV 主名>.xlsx，与输入 CSV 所在目录无关。"""
         with tempfile.TemporaryDirectory() as td:
@@ -205,7 +260,7 @@ class BatchRunTest(unittest.TestCase):
             table = read_csv_table(csv_path)
             target = stock_report._xlsx_target(table)
             self.assertEqual(target, self.xlsx_dir / "rows.xlsx")
-            self.assertNotEqual(target.parent, Path(td))     # 不再写在输入 CSV 旁边
+            self.assertNotEqual(target.parent, Path(td))     # 不写在输入 CSV 旁边
 
     def test_duplicate_codes_fetch_once_and_fill_both_rows(self):
         calls = {"n": 0}
@@ -217,42 +272,111 @@ class BatchRunTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             csv_path = self._csv(td, [{"代码": "600519", "名称": "贵州茅台"},
                                       {"代码": "600519", "名称": "贵州茅台"}])
+            out_dir = Path(td) / "reports"
             with patch("stock_report.fetch_all", side_effect=fake_fetch), \
                     contextlib.redirect_stdout(io.StringIO()):
                 rc = stock_report.main(["--csv-input", str(csv_path),
-                                        "--out-dir", str(Path(td) / "reports"), "--quiet"])
+                                        "--out-dir", str(out_dir), "--quiet"])
             self.assertEqual(rc, 0)
             self.assertEqual(calls["n"], 1)
-            rows = support.read_csv_rows(csv_path)
-            self.assertEqual(len(rows), 2)
-            for row in rows:
-                self.assertTrue(row[SCORE_COLUMN])
-                self.assertTrue(row[LINK_COLUMN].startswith('=HYPERLINK("file:///'))
-                self.assertIn("东方财富网股票详情", row[EASTMONEY_COLUMN])
+            nav = self._nav(out_dir)
+            self.assertEqual(nav.count('<td class="code">600519</td>'), 2)
+            self.assertEqual(nav.count("https://quote.eastmoney.com/sh600519.html"), 2)
+            self.assertEqual(len(self._reports(out_dir)), 1)
+
+    def test_input_csv_is_never_modified_and_no_csv_is_written(self):
+        """硬承诺：输入 CSV 只读，批量也不产出任何新 CSV。"""
+        with tempfile.TemporaryDirectory() as td:
+            csv_path = self._csv(td, [{"代码": "600519", "名称": "贵州茅台"}])
+            before = csv_path.read_bytes()
+            mtime = csv_path.stat().st_mtime_ns
+            out_dir = Path(td) / "reports"
+            with patch("stock_report.fetch_all", return_value=support.raw_bundle()), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rc = stock_report.main(["--csv-input", str(csv_path),
+                                        "--out-dir", str(out_dir), "--quiet"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(csv_path.read_bytes(), before)
+            self.assertEqual(csv_path.stat().st_mtime_ns, mtime)
+            self.assertNotIn(SCORE_COLUMN.encode(), before)      # 输入表没被加列
+            self.assertEqual(list(Path(td).rglob("*.csv")), [csv_path])
+            self.assertEqual(len(self._reports(out_dir)), 1)
+
+    def test_read_only_input_csv_still_runs(self):
+        """输入是 0444 也能跑：批量只读它，不写它。"""
+        with tempfile.TemporaryDirectory() as td:
+            csv_path = self._csv(td, [{"代码": "600519", "名称": "贵州茅台"}])
+            os.chmod(csv_path, 0o444)
+            out_dir = Path(td) / "reports"
+            with patch("stock_report.fetch_all", return_value=support.raw_bundle()), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rc = stock_report.main(["--csv-input", str(csv_path),
+                                        "--out-dir", str(out_dir), "--quiet"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(self._reports(out_dir)), 1)
 
     def test_invalid_code_marks_row_and_exits_1(self):
         with tempfile.TemporaryDirectory() as td:
             csv_path = self._csv(td, [{"代码": "abc", "名称": "无效"}])
+            out_dir = Path(td) / "reports"
             with patch("stock_report.fetch_all", side_effect=AssertionError("不应取数")), \
                     contextlib.redirect_stdout(io.StringIO()):
                 rc = stock_report.main(["--csv-input", str(csv_path),
-                                        "--out-dir", str(Path(td) / "reports"), "--quiet"])
+                                        "--out-dir", str(out_dir), "--quiet"])
             self.assertEqual(rc, 1)
-            row = support.read_csv_rows(csv_path)[0]
-            self.assertEqual(row[SCORE_COLUMN], "代码无效")
-            self.assertEqual(row[LINK_COLUMN], "")
-            self.assertEqual(row[EASTMONEY_COLUMN], "")
+            nav = self._nav(out_dir)
+            self.assertIn("代码无效", nav)
+            self.assertIn("无报告", nav)
+            self.assertEqual(self._reports(out_dir), [])
 
     def test_missing_code_row_is_marked(self):
         with tempfile.TemporaryDirectory() as td:
             csv_path = self._csv(td, [{"代码": "", "名称": "空"}])
+            out_dir = Path(td) / "reports"
             with contextlib.redirect_stdout(io.StringIO()):
                 rc = stock_report.main(["--csv-input", str(csv_path),
-                                        "--out-dir", str(Path(td) / "reports"), "--quiet"])
+                                        "--out-dir", str(out_dir), "--quiet"])
             self.assertEqual(rc, 1)
-            self.assertEqual(support.read_csv_rows(csv_path)[0][SCORE_COLUMN], "缺少股票代码")
+            self.assertIn("缺少股票代码", self._nav(out_dir))
 
-    def test_report_links_point_to_existing_files(self):
+    def test_too_few_annuals_marks_skip_and_exits_0(self):
+        """批量：导航页写「跳过：上市不足 3 年」、不生成 HTML、不算失败（退出码 0）。"""
+        with tempfile.TemporaryDirectory() as td:
+            csv_path = self._csv(td, [{"代码": "600519", "名称": "贵州茅台"}])
+            out_dir = Path(td) / "reports"
+            with patch("stock_report.build_report_data", side_effect=_trim_annual(2)), \
+                    patch("stock_report.fetch_all", return_value=support.raw_bundle()), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rc = stock_report.main(["--csv-input", str(csv_path),
+                                        "--out-dir", str(out_dir), "--quiet"])
+            self.assertEqual(rc, 0)                    # 跳过不算失败
+            self.assertIn(SKIP_SCORE_TEXT, self._nav(out_dir))
+            self.assertEqual(self._reports(out_dir), [])   # 只有导航页，没有报告
+
+    def test_skip_and_failure_are_counted_separately(self):
+        """跳过与真失败分开计数：跳过不影响退出码，失败才让退出码为 1。"""
+        with tempfile.TemporaryDirectory() as td:
+            csv_path = self._csv(td, [{"代码": "600519", "名称": "贵州茅台"},
+                                      {"代码": "000001", "名称": "平安银行"}])
+
+            def fake_fetch(code, timeout=90.0, **kwargs):
+                if code == "sz000001":
+                    raise DataError("关键数据 data_finance 获取失败")
+                return support.raw_bundle()
+
+            out_dir = Path(td) / "reports"
+            with patch("stock_report.build_report_data", side_effect=_trim_annual(2)), \
+                    patch("stock_report.fetch_all", side_effect=fake_fetch), \
+                    contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = stock_report.main(["--csv-input", str(csv_path),
+                                        "--out-dir", str(out_dir), "--quiet"])
+            self.assertEqual(rc, 1)                    # 有 1 行真失败
+            nav = self._nav(out_dir)
+            self.assertIn(SKIP_SCORE_TEXT, nav)
+            self.assertIn("生成失败", nav)
+
+    def test_batch_writes_report_nav_and_xlsx(self):
         with tempfile.TemporaryDirectory() as td:
             csv_path = self._csv(td, [{"代码": "600519", "名称": "贵州茅台"}])
             out_dir = Path(td) / "reports"
@@ -261,16 +385,37 @@ class BatchRunTest(unittest.TestCase):
                 rc = stock_report.main(["--csv-input", str(csv_path),
                                         "--out-dir", str(out_dir), "--quiet"])
             self.assertEqual(rc, 0)
-            link = support.read_csv_rows(csv_path)[0][LINK_COLUMN]
-            report = Path(unquote(urlparse(link_target(link)).path))
-            self.assertTrue(report.is_file())
-            self.assertEqual(report.parent.resolve(), out_dir.resolve())
-            self.assertRegex(report.name, r"^贵州茅台-sh600519-企业质量初筛-\d{8}-\d{6}\.html$")
-            self.assertTrue((out_dir / "index.html").is_file())
-            # 结果 Excel 落在 config.XLSX_OUT_DIR，不再写到输入 CSV 旁边
-            xlsx = self.xlsx_dir / "rows.xlsx"
-            self.assertTrue(xlsx.is_file())
+            reports = self._reports(out_dir)
+            self.assertEqual(len(reports), 1)
+            self.assertEqual(reports[0].parent.resolve(), out_dir.resolve())
+            self.assertRegex(reports[0].name,
+                             r"^贵州茅台-sh600519-企业质量初筛-\d{8}-\d{6}\.html$")
+            self.assertTrue((out_dir / "rows.html").is_file())   # 导航页跟 CSV 主名一致
+            self.assertTrue((self.xlsx_dir / "rows.xlsx").is_file())
             self.assertFalse(csv_path.with_suffix(".xlsx").exists())
+
+    def test_second_run_resumes_without_refetching(self):
+        """续跑只看输出目录里的报告（文件名带代码），不依赖任何 CSV。"""
+        with tempfile.TemporaryDirectory() as td:
+            csv_path = self._csv(td, [{"代码": "600519", "名称": "贵州茅台"}])
+            out_dir = Path(td) / "reports"
+
+            def must_not_fetch(code, timeout=90.0, **kwargs):
+                raise AssertionError("已有报告时不应重新取数")
+
+            with patch("stock_report.fetch_all", return_value=support.raw_bundle()), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(stock_report.main(["--csv-input", str(csv_path),
+                                                    "--out-dir", str(out_dir),
+                                                    "--quiet"]), 0)
+            first = self._reports(out_dir)
+            self.assertEqual(len(first), 1)
+            with patch("stock_report.fetch_all", side_effect=must_not_fetch), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(stock_report.main(["--csv-input", str(csv_path),
+                                                    "--out-dir", str(out_dir),
+                                                    "--quiet"]), 0)
+            self.assertEqual(self._reports(out_dir), first)      # 没有新增报告
 
 
 if __name__ == "__main__":

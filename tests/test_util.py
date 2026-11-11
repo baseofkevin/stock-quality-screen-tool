@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import support  # noqa: F401  (把项目根目录加入 sys.path)
 from screen.util import (cagr, clamp, div, inverse, linear, mean, median, num,
-                         pct, ratio, stdev, text, year_of, yi)
+                         stdev, year_of)
 
 
 class NumTest(unittest.TestCase):
@@ -115,24 +115,6 @@ class YearOfTest(unittest.TestCase):
         self.assertIsNone(year_of(""))
         self.assertIsNone(year_of(None))
         self.assertIsNone(year_of("abc"))
-
-
-class FormatTest(unittest.TestCase):
-    def test_pct(self):
-        self.assertEqual(pct(None), "—")
-        self.assertEqual(pct(12.34), "12.3%")
-        self.assertEqual(pct(12.34, 2), "12.34%")
-
-    def test_yi(self):
-        self.assertEqual(yi(None), "—")
-        self.assertEqual(yi(1e8), "1.00 亿")
-        self.assertEqual(yi(2.5e8, 1), "2.5 亿")
-
-    def test_ratio_and_text(self):
-        self.assertEqual(ratio(None), "—")
-        self.assertEqual(ratio(1.234), "1.23")
-        self.assertEqual(text("  "), "暂无披露")
-        self.assertEqual(text("白酒", "无"), "白酒")
 
 
 class ScorePrimitiveContractTest(unittest.TestCase):

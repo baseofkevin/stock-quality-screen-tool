@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""小工具：安全数值、统计、格式化。"""
+"""小工具：安全数值与统计原语。格式化统一在 screen/fmt.py，不在这里。"""
 from __future__ import annotations
 
 import math
@@ -83,19 +83,3 @@ def year_of(value: Any) -> int | None:
     m = re.search(r"(20\d{2})", str(value or ""))
     return int(m.group(1)) if m else None
 
-
-def pct(value: float | None, digits: int = 1) -> str:
-    return "—" if value is None else f"{value:.{digits}f}%"
-
-
-def yi(value: float | None, digits: int = 2) -> str:
-    return "—" if value is None else f"{value / 1e8:,.{digits}f} 亿"
-
-
-def ratio(value: float | None, digits: int = 2) -> str:
-    return "—" if value is None else f"{value:.{digits}f}"
-
-
-def text(value: Any, default: str = "暂无披露") -> str:
-    s = str(value or "").strip()
-    return s or default

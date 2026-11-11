@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import config
+from screen.fmt import num as _n, pct as _p, signed_pct as _delta_pct, yi_suffix as _yi
 from screen.util import cagr, clamp, div, inverse, linear, mean, median, num, stdev
 
 STATUS_LABEL = {"hit": "命中", "watch": "提示", "clear": "通过", "unknown": "数据不足", "na": "不适用"}
@@ -24,7 +25,10 @@ def _prev(data: dict[str, Any]) -> dict[str, Any]:
     return ys[-2] if len(ys) >= 2 else {}
 
 
-def _group(parts: list[dict[str, Any]], label: str, weight: float) -> dict[str, Any]:
+def _group(parts: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    """组名和组权重都从 config 取，调用方只给 key（returns / cash / ...）。"""
+    label = config.QUALITY_GROUP_LABELS[key]
+    weight = config.QUALITY_WEIGHTS[key]
     available = [p for p in parts if p.get("score") is not None]
     got = sum(float(p["score"]) for p in available)
     max_available = sum(float(p["max"]) for p in available)
@@ -32,7 +36,7 @@ def _group(parts: list[dict[str, Any]], label: str, weight: float) -> dict[str, 
     # 缺失项按 0 分计入组内总分，避免“数据缺失反而满分”；覆盖度单独展示。
     score = (got / max_possible * weight) if max_available else None
     return {
-        "key": label,
+        "key": key,
         "label": label,
         "weight": weight,
         "score": score,
@@ -46,6 +50,25 @@ def _item(label: str, score: float | None, maximum: float, raw: str) -> dict[str
     return {"label": label, "score": score, "max": maximum, "raw": raw}
 
 
+def _band(group: str, item: str, value: float | None, m: dict[str, dict[str, float]]) -> float | None:
+    """按 config.QUALITY_ITEM_RANGES 把原始值映射成该子项得分。
+
+    区间和方向都写在 config 里（0.9.8 起）：以前 13 组 low/high 硬编码在这里，
+    改 QUALITY_ITEM_MAX 的满分却忘了改区间，Q 会悄悄偏一点，测试也看不出来。
+    """
+    low, high, direction = config.QUALITY_ITEM_RANGES[group][item]
+    points = m[group][item]
+    return linear(value, low, high, points) if direction == "up" else inverse(value, low, high, points)
+
+
+def grade_of(total: float | None) -> str:
+    """Q 分 → 档名（优秀 / 良好 / ...）。分档表在 config.QUALITY_GRADES。"""
+    if total is None:
+        return "数据不足"
+    return next(label for cut, label in config.QUALITY_GRADES if total >= cut)
+
+
+
 def _quality(data: dict[str, Any]) -> dict[str, Any]:
     """质量分 Q：五个维度、16 个子项，组内缺失按 0 分。
 
@@ -56,7 +79,7 @@ def _quality(data: dict[str, Any]) -> dict[str, Any]:
     - A4 资本回报组加 ROIC 高于 WACC 的年数，ROE 降权到 6。
     """
     ys = _years(data)
-    if len(ys) < 2:
+    if len(ys) < config.MIN_ANNUAL_YEARS:
         return {"score": None, "grade": "数据不足", "groups": [], "coverage": 0.0}
 
     m = config.QUALITY_ITEM_MAX
@@ -97,7 +120,8 @@ def _quality(data: dict[str, Any]) -> dict[str, Any]:
                          / (config.QUALITY_GM_LEVEL_FULL - config.QUALITY_GM_LEVEL_FLOOR), 0.0, 1.0)
     gm_stability = None
     if gm_level is not None and gm_std is not None:      # 只有 1 年毛利率时 σ 为空，不能乘 None
-        gm_stability = inverse(gm_std, 0, 5, m["durability"]["gm_stability"]) * gm_level
+        gm_base = _band("durability", "gm_stability", gm_std, m)
+        gm_stability = gm_base * gm_level if gm_base is not None else None
     roe_std = stdev([y.get("roe") for y in ys])
     # 与风险检查一致：用最近 3 年，避免 IPO 当年一次性扩张拉高稀释率
     dilution_base = ys[-4] if len(ys) >= 4 else ys[0]
@@ -115,54 +139,51 @@ def _quality(data: dict[str, Any]) -> dict[str, Any]:
     deducted_ratio = div(latest.get("deducted"), latest.get("net_profit"))
 
     returns = _group([
-        _item("ROIC−WACC", linear(spread, 0, 15, m["returns"]["spread"]), m["returns"]["spread"],
+        _item("ROIC−WACC", _band("returns", "spread", spread, m), m["returns"]["spread"],
               f"{_p(spread)}"),
         _item("ROIC>WACC 年数",
               (above / len(roic_known) * m["returns"]["above_wacc"]) if roic_known else None,
               m["returns"]["above_wacc"],
               f"{above}/{len(roic_known)}" if roic_known else "—"),
-        _item("ROE 中位数", linear(roe, 8, 20, m["returns"]["roe"]), m["returns"]["roe"], f"{_p(roe)}"),
-    ], "资本回报", config.QUALITY_WEIGHTS["returns"])
+        _item("ROE 中位数", _band("returns", "roe", roe, m), m["returns"]["roe"], f"{_p(roe)}"),
+    ], "returns")
     cash = _group([
         _item("FCF 为正年数", (positive / len(fcf_known) * m["cash"]["fcf_years"]) if fcf_known else None,
               m["cash"]["fcf_years"], f"{positive}/{len(fcf_known)}" if fcf_known else "—"),
-        _item("FCF/净利润", linear(fcf_ni, 0, 1, m["cash"]["fcf_ni"]), m["cash"]["fcf_ni"],
+        _item("FCF/净利润", _band("cash", "fcf_ni", fcf_ni, m), m["cash"]["fcf_ni"],
               f"{_n(fcf_ni)}"),
-        _item("CFO/净利润", linear(cfo_ni, 0.7, 1.2, m["cash"]["cfo_ni"]), m["cash"]["cfo_ni"],
+        _item("CFO/净利润", _band("cash", "cfo_ni", cfo_ni, m), m["cash"]["cfo_ni"],
               f"{_n(cfo_ni)}"),
-        _item("FCF/营收", linear(fcf_margin_pct, 0, 15, m["cash"]["fcf_margin"]),
+        _item("FCF/营收", _band("cash", "fcf_margin", fcf_margin_pct, m),
               m["cash"]["fcf_margin"], f"{_p(fcf_margin_pct)}"),
-    ], "现金创造力", config.QUALITY_WEIGHTS["cash"])
+    ], "cash")
+    goodwill_pct = goodwill_ratio * 100 if goodwill_ratio is not None else None
     balance = _group([
-        _item("净负债/EBIT", inverse(net_debt_ebit, 0, 3, m["balance"]["net_debt_ebit"])
-              if net_debt_ebit is not None else None,
+        _item("净负债/EBIT", _band("balance", "net_debt_ebit", net_debt_ebit, m),
               m["balance"]["net_debt_ebit"], f"{_n(net_debt_ebit)}"),
-        _item("利息保障", linear(interest, 3, 10, m["balance"]["interest"])
-              if interest is not None else None, m["balance"]["interest"],
+        _item("利息保障", _band("balance", "interest", interest, m), m["balance"]["interest"],
               "净利息收入" if interest == 99.0 else f"{_n(interest)}x"),
-        _item("商誉/净资产",
-              inverse(goodwill_ratio * 100 if goodwill_ratio is not None else None, 0, 20,
-                      m["balance"]["goodwill"]),
-              m["balance"]["goodwill"], f"{_p(goodwill_ratio * 100 if goodwill_ratio is not None else None)}"),
-    ], "资产负债表", config.QUALITY_WEIGHTS["balance"])
+        _item("商誉/净资产", _band("balance", "goodwill", goodwill_pct, m),
+              m["balance"]["goodwill"], f"{_p(goodwill_pct)}"),
+    ], "balance")
     durability = _group([
-        _item("营收 CAGR", linear(rev_cagr, 0, 15, m["durability"]["rev_cagr"]),
+        _item("营收 CAGR", _band("durability", "rev_cagr", rev_cagr, m),
               m["durability"]["rev_cagr"], f"{_p(rev_cagr)}"),
         _item("毛利率稳定性", gm_stability, m["durability"]["gm_stability"],
               f"σ {_n(gm_std)}｜中位 {_p(gm_med)}（水平 ×{gm_level:.2f}）" if gm_level is not None
               else f"σ {_n(gm_std)}"),
-        _item("ROE 稳定性", inverse(roe_std, 0, 8, m["durability"]["roe_stability"]),
+        _item("ROE 稳定性", _band("durability", "roe_stability", roe_std, m),
               m["durability"]["roe_stability"], f"σ {_n(roe_std)}"),
-        _item("股本稀释", inverse(dilution, 0, 3, m["durability"]["dilution"]),
+        _item("股本稀释", _band("durability", "dilution", dilution, m),
               m["durability"]["dilution"], f"{_p(dilution)}"),
-    ], "成长与稳定", config.QUALITY_WEIGHTS["durability"])
+    ], "durability")
+    deducted_pct = deducted_ratio * 100 if deducted_ratio is not None else None
     accounting = _group([
-        _item("应计利润", inverse(accrual, 0, 10, m["accounting"]["accrual"]), m["accounting"]["accrual"],
+        _item("应计利润", _band("accounting", "accrual", accrual, m), m["accounting"]["accrual"],
               f"3 年中位 {_p(accrual)}（单年 {_p(accrual_one)}）"),
-        _item("扣非占比", linear(deducted_ratio * 100 if deducted_ratio is not None else None, 70, 100,
-                                m["accounting"]["deducted"]),
-              m["accounting"]["deducted"], f"{_p(deducted_ratio * 100 if deducted_ratio is not None else None)}"),
-    ], "会计质量", config.QUALITY_WEIGHTS["accounting"])
+        _item("扣非占比", _band("accounting", "deducted", deducted_pct, m),
+              m["accounting"]["deducted"], f"{_p(deducted_pct)}"),
+    ], "accounting")
 
     groups = [returns, cash, balance, durability, accounting]
     available = [g for g in groups if g["score"] is not None]
@@ -170,43 +191,12 @@ def _quality(data: dict[str, Any]) -> dict[str, Any]:
     total = (sum(float(g["score"]) for g in available) / weight * 100.0) if weight else None
     coverage = (sum(g["weight"] * g["coverage"] / 100.0 for g in groups) / sum(g["weight"] for g in groups) * 100.0
                 if groups else 0.0)
-    if total is None:
-        grade = "数据不足"
-    elif total >= 85:
-        grade = "优秀"
-    elif total >= 75:
-        grade = "良好"
-    elif total >= 65:
-        grade = "中等偏上"
-    elif total >= 55:
-        grade = "中等"
-    elif total >= 45:
-        grade = "偏弱"
-    else:
-        grade = "差"
     return {
         "score": round(total, 1) if total is not None else None,
-        "grade": grade,
+        "grade": grade_of(total),          # 分档表在 config.QUALITY_GRADES
         "groups": groups,
         "coverage": round(coverage, 1),
     }
-
-
-def _p(v: float | None, digits: int = 1) -> str:
-    return "—" if v is None else f"{v:.{digits}f}%"
-
-
-def _n(v: float | None, digits: int = 2) -> str:
-    return "—" if v is None else f"{v:.{digits}f}"
-
-
-def _yi(v: float | None, digits: int = 2) -> str:
-    return "—" if v is None else f"{v / 1e8:,.{digits}f} 亿"
-
-
-def _delta_pct(v: float | None) -> str:
-    """增长率（小数）转成带符号百分比。"""
-    return "—" if v is None else f"{v * 100:+.1f}%"
 
 
 def _growth(now: float | None, before: float | None) -> float | None:
@@ -553,14 +543,19 @@ def _risk_checks(data: dict[str, Any]) -> list[dict[str, Any]]:
         detail = f"应收增速差（应收增速−营收增速）近两年 {gaps_txt}；应收占营收 {_p(ar_ratio * 100)}"
         latest_gap = ar_gaps[-1] if ar_gaps else None
         both = len(ar_gaps) == 2 and all(g is not None and g > config.AR_REV_GAP_ALERT for g in ar_gaps)
+        # 档位与基数解耦：先判「这个科目够不够大」，再判命中/关注。
+        # 否则 0.5%~2% 的应收只要连续两年超 15pct 就直接 hit，把只有几千万的科目
+        # 送进一致性闸门（命中 1 项 → 买入类降「观察」），正是小基数保护要防的事。
+        material = ar_ratio >= config.AR_MATERIAL_RATIO
         if latest_gap is not None and latest_gap > config.AR_REV_GAP_ALERT:
-            if both:
+            if both and material:
                 status = "hit"
                 detail = "连续两年 > 15pct；" + detail
             else:
                 # 应收占营收 <2% 时只提示（茅台票据 1.17% 能造出 +2580pct）
-                if ar_ratio < config.AR_MATERIAL_RATIO:
-                    detail = "应收不足营收 2%，仅提示；" + detail
+                if not material:
+                    detail = ("连续两年 > 15pct，但应收不足营收 2%，仅提示；"
+                              if both else "应收不足营收 2%，仅提示；") + detail
                 status = "watch"
         else:
             status = "clear"
@@ -732,9 +727,9 @@ def _risk_checks(data: dict[str, Any]) -> list[dict[str, Any]]:
         ratio = gw / eq
         detail = f"商誉/归母净资产 = {_p(ratio * 100)}" + (
             "（接口未返回商誉，按 0 处理，建议核对年报）" if latest.get("goodwill_imputed") else "")
-        if ratio > config.GOODWILL_EQUITY_WARN:
+        if ratio > config.GOODWILL_EQUITY_HIT:
             status = "hit"
-        elif ratio > config.GOODWILL_EQUITY_MAX:
+        elif ratio > config.GOODWILL_EQUITY_WATCH:
             status = "watch"
         else:
             status = "clear"
@@ -833,14 +828,19 @@ def _fatal(data: dict[str, Any], checks: list[dict[str, Any]]) -> list[str]:
     if latest.get("equity") is not None and latest["equity"] <= 0:
         fatal.append("净资产为负")
     fin, ebit = latest.get("finance_expense"), latest.get("ebit")
-    if fin is not None and fin > 0 and ebit is not None and ebit / fin < 1:
+    if fin is not None and fin > 0 and ebit is not None and ebit / fin < config.INTEREST_COVER_FATAL:
         fatal.append("利息保障 < 1")
     gw, eq = latest.get("goodwill"), latest.get("equity")
     if gw is not None and eq and gw / eq > config.GOODWILL_EQUITY_FATAL:
-        fatal.append("商誉/净资产超过 50%")
-    if all((y.get("ocf") or 0) < 0 for y in _years(data)[-3:]) and latest.get("ebit") and latest.get("debt") is not None and latest.get("cash") is not None:
-        if (latest["debt"] - latest["cash"]) / latest["ebit"] > 4:
-            fatal.append("连续 3 年经营现金流为负且净负债/EBIT > 4")
+        fatal.append(f"商誉/净资产超过 {config.GOODWILL_EQUITY_FATAL * 100:.0f}%")
+    # 必须真有 3 个年报且 3 年 OCF 都为负，才谈得上「连续 3 年」：
+    # 旧写法 `_years(data)[-3:]` 在只有 2 年时切片仍非空，会把 2 年说成 3 年。
+    ocf_3y = [y.get("ocf") for y in _years(data)[-3:]]
+    if (len(ocf_3y) >= 3 and all(v is not None and v < 0 for v in ocf_3y)
+            and latest.get("ebit") and latest.get("debt") is not None
+            and latest.get("cash") is not None):
+        if (latest["debt"] - latest["cash"]) / latest["ebit"] > config.FATAL_NET_DEBT_EBIT:
+            fatal.append(f"连续 {config.FCF_NEGATIVE_YEARS} 年经营现金流为负且净负债/EBIT > {config.FATAL_NET_DEBT_EBIT:g}")
     return fatal
 
 
@@ -952,15 +952,19 @@ def _valuation_score(data: dict[str, Any]) -> dict[str, Any]:
         pe_raw = f"当前 {_n(m['current_pe'])}x → {year} {_n(m['forecast_pe'])}x"
     else:
         pe_raw = "缺少当前 PE 或预测 PE"
+        # 口径日 PE 为负时 current_pe 是 None，但不能说「缺少」——数据是有的，只是不可用
+        chart = ((data.get("valuation") or {}).get("chart") or {})
+        if m["current_pe"] is None and chart.get("pe_negative_latest"):
+            pe_raw = "口径日 PE 为负，不参与"
     growth_raw = (f"未来 {m['growth_count']} 年均值 {m['growth']:+.1f}%"
                   if m["growth"] is not None else m["growth_reason"])
 
     parts = [
-        {"key": "target_upside", "label": "机构目标价空间", "score": target_score,
+        {"key": "target_upside", "label": config.VALUATION_WEIGHT_TEXT["target_upside"], "score": target_score,
          "max": config.VALUATION_WEIGHTS["target_upside"], "raw": target_raw},
-        {"key": "forecast_pe", "label": "预测 PE 相对当前 PE", "score": pe_score,
+        {"key": "forecast_pe", "label": config.VALUATION_WEIGHT_TEXT["forecast_pe"], "score": pe_score,
          "max": config.VALUATION_WEIGHTS["forecast_pe"], "raw": pe_raw},
-        {"key": "profit_growth", "label": "预期未来净利增速", "score": growth_score,
+        {"key": "profit_growth", "label": config.VALUATION_WEIGHT_TEXT["profit_growth"], "score": growth_score,
          "max": config.VALUATION_WEIGHTS["profit_growth"], "raw": growth_raw},
     ]
     available = [p for p in parts if p["score"] is not None]
@@ -1104,38 +1108,18 @@ def _decision(q: dict[str, Any], v: dict[str, Any], fatal: list[str],
     if qs < config.QUALITY_HARD_FLOOR:
         return {"key": "avoid", "label": "回避", "reason": f"质量分 {qs:.1f} 低于 {config.QUALITY_HARD_FLOOR:.0f}，禁止买入"}
 
-    if qs >= 75:
-        if vs >= config.BUY_MIN_V["high"]:
-            result = {"key": "buy", "label": "推荐买入", "reason": "质量好且估值便宜"}
-        elif vs >= 50:
-            result = {"key": "watch_price", "label": "好公司，等价格", "reason": "质量通过，估值尚未到舒服区间"}
-        elif vs >= 35:
-            result = {"key": "expensive", "label": "好公司，但偏贵，等价格", "reason": "质量通过，估值偏贵"}
-        else:
-            result = {"key": "expensive", "label": "好公司，但太贵", "reason": "质量通过，估值明显偏贵"}
-    elif qs >= 65:
-        if vs >= 80:
-            result = {"key": "buy", "label": "推荐买入", "reason": "质量中等偏上，估值明显低估"}
-        elif vs >= config.BUY_MIN_V["medium_high"]:
-            result = {"key": "buy_ok", "label": "可买", "reason": "质量中等偏上，估值便宜"}
-        elif vs >= 50:
-            result = {"key": "watch", "label": "观察", "reason": "质量中等偏上，估值不够便宜"}
-        else:
-            result = {"key": "avoid", "label": "回避", "reason": "质量中等偏上，但估值不便宜"}
-    elif qs >= 55:
-        if vs >= config.BUY_MIN_V["medium"]:
-            result = {"key": "buy_small", "label": "小仓买入", "reason": "质量一般，估值足够便宜，仅小仓"}
-        elif vs >= 50:
-            result = {"key": "watch", "label": "观察", "reason": "质量一般，估值不够便宜"}
-        else:
-            result = {"key": "avoid", "label": "回避", "reason": "质量一般且估值不便宜"}
-    else:
-        if vs >= config.BUY_MIN_V["weak"]:
-            result = {"key": "buy_trial", "label": "小仓试错", "reason": "质量偏弱，只在明显低估时小仓"}
-        elif vs >= 65:
-            result = {"key": "watch", "label": "观察", "reason": "质量偏弱，估值不够便宜"}
-        else:
-            result = {"key": "avoid", "label": "回避", "reason": "质量偏弱且估值不便宜"}
+    # 矩阵在 config.DECISION_MATRIX：先按 Q 落档，再按 V 落格
+    result: dict[str, Any] | None = None
+    for tier in config.DECISION_MATRIX:
+        if qs < tier["q_min"]:
+            continue
+        for rule in tier["rules"]:
+            if rule["v_min"] is None or vs >= rule["v_min"]:
+                result = {"key": rule["key"], "label": rule["label"], "reason": rule["reason"]}
+                break
+        break
+    if result is None:      # 矩阵没覆盖到的 Q（低于最低档）：只有改坏 config 才会到这里
+        return {"key": "avoid", "label": "回避", "reason": f"质量分 {qs:.1f} 超出决策矩阵覆盖范围"}
 
     # 闸门先于数据完整性：命中两项的“回避”比“数据不全”的“观察”更重，不能被后者盖掉
     gate = _risk_gate(result, risks or {})
@@ -1167,13 +1151,13 @@ def _expectation_flags(data: dict[str, Any], v: dict[str, Any]) -> list[str]:
     if nxt and hist is not None and nxt["net_profit_yoy"] > hist + 15:
         flags.append(f"机构预期下一年净利增速 {nxt['net_profit_yoy']:.1f}%，明显高于公司近 3 年实际增速 {hist:.1f}%，预期偏乐观。")
     target = fc.get("target_price")
-    price = data["meta"].get("price")
+    price = (data.get("meta") or {}).get("price")
     if target and price:
         upside = (target / price - 1) * 100
         if upside > 30 and (v.get("score") is not None and v["score"] < 60):
             flags.append(f"机构目标价较现价高 {upside:.1f}%，但规则估值分仅 {v['score']:.0f}，两者分歧较大。")
     if nxt and nxt["net_profit_yoy"] < 0:
-        pe = (data["valuation"].get("metrics") or {}).get("pe") or {}
+        pe = ((data.get("valuation") or {}).get("metrics") or {}).get("pe") or {}
         if pe.get("percentile") is not None and pe["percentile"] < 30:
             flags.append("机构预测净利下滑，而当前 PE 分位很低，低估值可能已反映盈利下修。")
     return flags
@@ -1246,11 +1230,14 @@ def _tracking(data: dict[str, Any], q: dict[str, Any]) -> list[dict[str, str]]:
     items.append({"metric": "净有息负债/EBIT", "current": _n(div(nd, latest.get("ebit"))),
                   "threshold": f"≤ {config.NET_DEBT_EBIT_MAX:.0f}", "frequency": "每季"})
     items.append({"metric": "商誉/净资产", "current": _p(div(latest.get("goodwill"), latest.get("equity")) * 100 if latest.get("goodwill") is not None and latest.get("equity") else None),
-                  "threshold": f"≤ {config.GOODWILL_EQUITY_MAX * 100:.0f}%", "frequency": "每半年"})
+                  "threshold": f"≤ {config.GOODWILL_EQUITY_WATCH * 100:.0f}%", "frequency": "每半年"})
     items.append({"metric": "营收增速", "current": _p(div((latest.get("revenue") or 0) - (_prev(data).get("revenue") or 0), _prev(data).get("revenue")) * 100 if _prev(data).get("revenue") else None),
                   "threshold": "> 0，且应收/存货不异常加速", "frequency": "每季"})
-    pe = (data["valuation"].get("metrics") or {}).get("pe") or {}
-    items.append({"metric": "PE 分位", "current": f"{pe.get('percentile', '—')}%" if pe else "—",
+    pe = ((data.get("valuation") or {}).get("metrics") or {}).get("pe") or {}
+    # percentile 可能是 None（口径日 PE 为负/缺失 → 该指标本次不可用）：
+    # 直接用 pe.get('percentile', '—') 会打成「None%」，这里必须显式判 None。
+    pe_pct = pe.get("percentile")
+    items.append({"metric": "PE 分位", "current": f"{pe_pct}%" if pe_pct is not None else "—",
                   "threshold": "< 80%", "frequency": "每月"})
     items.append({"metric": "机构一致预期", "current": f"{len((data.get('forecast') or {}).get('forecasts') or [])} 个年度",
                   "threshold": "不下修、不空覆盖", "frequency": "每季"})
