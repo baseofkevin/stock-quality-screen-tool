@@ -34,6 +34,7 @@ Thumbs.db
 /html-report/
 # 0.9.10 起不再产出 Excel；这行保留是为了拦住旧的 xlsx-output/ 目录意外回流
 /xlsx-output/
+/csv_input/
 # 删除 xlsx-output/ 前做的本地备份，不应入库
 /.xlsx-output-backup-*/
 /examples/
