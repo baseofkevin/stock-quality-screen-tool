@@ -16,7 +16,7 @@ import stock_report
 import config
 import support
 from screen.batch import (EASTMONEY_COLUMN, LINK_COLUMN, SCORE_COLUMN,
-                          SKIP_SCORE_TEXT, read_csv_table)
+                          SKIP_SCORE_TEXT)
 from screen.fetch import DataError
 
 
@@ -47,14 +47,18 @@ class ParserTest(unittest.TestCase):
     def test_defaults(self):
         args = stock_report.build_parser().parse_args(["--stock-code", "600519"])
         self.assertEqual(Path(args.out_dir), support.ROOT / "html-report")
-        # 批量结果 Excel 的默认落盘目录：项目内 xlsx-output/，与 html-report/ 同级
-        self.assertEqual(Path(config.XLSX_OUT_DIR), support.ROOT / "xlsx-output")
         self.assertEqual(args.timeout, 90.0)
         self.assertEqual(args.workers, 4)
         self.assertEqual(args.retries, 2)
         self.assertEqual(args.retry_wait, 60.0)
         self.assertFalse(args.force)
         self.assertFalse(args.quiet)
+
+    def test_no_xlsx_output_config(self):
+        """0.9.10 起批量不再产出 Excel：配置项与模块都必须删掉，不能只停止调用。"""
+        self.assertFalse(hasattr(config, "XLSX_OUT_DIR"))
+        with self.assertRaises(ImportError):
+            __import__("screen.xlsx")
 
     def test_flags(self):
         args = stock_report.build_parser().parse_args([
@@ -82,15 +86,16 @@ class ParserTest(unittest.TestCase):
                     parser.parse_args(["--stock-code", "600519", flag, "a.csv"])
 
     def test_help_promises_the_input_csv_is_read_only(self):
-        """帮助里必须写明「输入只读、不产出 CSV」，否则没人敢指向原始选股表。"""
-        # argparse 按终端宽度折行，可能把 xlsx-output 拆成「xlsx- / output」，先去空白再断言
+        """帮助里必须写明「输入只读、不产出 CSV/Excel」，否则没人敢指向原始选股表。"""
+        # argparse 按终端宽度折行，可能把长句拆开，先去空白再断言
         text = "".join(stock_report.build_parser().format_help().split())
         self.assertIn("输入CSV只读", text)
         self.assertIn("也不会产出新的CSV", text)
-        self.assertIn("xlsx-output", text)
         self.assertIn("--csv-input", text)
         self.assertNotIn("就地改写", text)
         self.assertNotIn("csv-output", text)
+        # 不再承诺 Excel：产物只有 HTML 与导航页
+        self.assertNotIn("xlsx-output", text)
 
 
 class ArgumentValidationTest(unittest.TestCase):
@@ -232,35 +237,17 @@ class SingleRunTest(unittest.TestCase):
 
 
 class BatchRunTest(unittest.TestCase):
-    def setUp(self):
-        # 结果 Excel 固定写到 config.XLSX_OUT_DIR；测试要落到临时目录，别污染项目的 xlsx-output/
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.xlsx_dir = Path(tmp.name) / "xlsx-output"
-        patcher = patch.object(config, "XLSX_OUT_DIR", str(self.xlsx_dir))
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
     def _csv(self, td, rows):
         path = Path(td) / "rows.csv"
         support.write_csv(path, rows, ["代码", "名称"])
         return path
 
     def _nav(self, out_dir: Path, stem: str = "rows") -> str:
-        """批量结果的可读出口是导航页（批量不再写 CSV）。"""
+        """批量结果的可读出口是导航页（批量不再写 CSV / Excel）。"""
         return (out_dir / f"{stem}.html").read_text(encoding="utf-8")
 
     def _reports(self, out_dir: Path) -> list[Path]:
         return sorted(out_dir.glob("*-企业质量初筛-*.html"))
-
-    def test_xlsx_target_keeps_csv_stem_under_xlsx_output(self):
-        """目标路径 = xlsx-output/<输入 CSV 主名>.xlsx，与输入 CSV 所在目录无关。"""
-        with tempfile.TemporaryDirectory() as td:
-            csv_path = self._csv(td, [{"代码": "600519", "名称": "贵州茅台"}])
-            table = read_csv_table(csv_path)
-            target = stock_report._xlsx_target(table)
-            self.assertEqual(target, self.xlsx_dir / "rows.xlsx")
-            self.assertNotEqual(target.parent, Path(td))     # 不写在输入 CSV 旁边
 
     def test_duplicate_codes_fetch_once_and_fill_both_rows(self):
         calls = {"n": 0}
@@ -376,7 +363,7 @@ class BatchRunTest(unittest.TestCase):
             self.assertIn(SKIP_SCORE_TEXT, nav)
             self.assertIn("生成失败", nav)
 
-    def test_batch_writes_report_nav_and_xlsx(self):
+    def test_batch_writes_report_and_nav_only(self):
         with tempfile.TemporaryDirectory() as td:
             csv_path = self._csv(td, [{"代码": "600519", "名称": "贵州茅台"}])
             out_dir = Path(td) / "reports"
@@ -391,7 +378,10 @@ class BatchRunTest(unittest.TestCase):
             self.assertRegex(reports[0].name,
                              r"^贵州茅台-sh600519-企业质量初筛-\d{8}-\d{6}\.html$")
             self.assertTrue((out_dir / "rows.html").is_file())   # 导航页跟 CSV 主名一致
-            self.assertTrue((self.xlsx_dir / "rows.xlsx").is_file())
+            # 产物只有两处：报告目录里的 HTML + 同目录导航页；不再产生任何 Excel
+            self.assertEqual(sorted(p.suffix for p in out_dir.iterdir()),
+                             [".html", ".html"])
+            self.assertFalse(list(Path(td).rglob("*.xlsx")))
             self.assertFalse(csv_path.with_suffix(".xlsx").exists())
 
     def test_second_run_resumes_without_refetching(self):

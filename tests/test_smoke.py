@@ -4,7 +4,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,7 +23,6 @@ from screen.compute import (_cash_valuation, _margin_trend, _valuation_chart,
 from screen.render import _margin_chart, _section_valuation, render_html  # noqa: E402
 from screen.score import _data_quality, _decision, _valuation_score, compute_scores  # noqa: E402
 from screen.summary import SummaryError, extract_score_summary  # noqa: E402
-from screen.xlsx import write_report_xlsx  # noqa: E402
 from providers.eastmoney import to_secucode  # noqa: E402
 
 FIXTURE = ROOT / "tests" / "fixtures" / "mini_bundle.json"
@@ -375,15 +373,6 @@ class ScoreSummaryTest(unittest.TestCase):
 
 
 class CsvBatchTest(unittest.TestCase):
-    def setUp(self):
-        # 结果 Excel 固定写到 config.XLSX_OUT_DIR；测试要落到临时目录，别污染项目的 xlsx-output/
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.xlsx_dir = Path(tmp.name) / "xlsx-output"
-        patcher = patch.object(config, "XLSX_OUT_DIR", str(self.xlsx_dir))
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
     def _write_csv(self, path: Path, codes: list[tuple[str, str]]) -> None:
         lines = ["\ufeff代码,名称,备注"]
         lines.extend(f"{code},{name},保留" for code, name in codes)
@@ -515,7 +504,7 @@ class EastmoneyUrlTest(unittest.TestCase):
 
 
 class NavigationOutputTest(unittest.TestCase):
-    def test_xlsx_and_index_contain_clickable_report_links(self):
+    def test_index_contains_clickable_report_links(self):
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             csv_path = td_path / "rows.csv"
@@ -530,16 +519,6 @@ class NavigationOutputTest(unittest.TestCase):
             table.rows[0][LINK_COLUMN] = report_link_cell(report)
             table.rows[0][EASTMONEY_COLUMN] = eastmoney_link_cell("600519")
 
-            xlsx = write_report_xlsx(table)
-            with zipfile.ZipFile(xlsx) as zf:
-                sheet = zf.read("xl/worksheets/sheet1.xml").decode("utf-8")
-                rels = zf.read("xl/worksheets/_rels/sheet1.xml.rels").decode("utf-8")
-            self.assertIn("报告链接", sheet)
-            self.assertIn("东方财富网股票详情", sheet)
-            self.assertIn("hyperlink", sheet)
-            self.assertIn("file:///", rels)
-            self.assertIn("https://quote.eastmoney.com/sh600519.html#fullScreenChart", rels)
-
             index = write_index_html(table, out_dir)
             text = index.read_text(encoding="utf-8")
             self.assertIn("报告链接", text)
@@ -547,6 +526,8 @@ class NavigationOutputTest(unittest.TestCase):
             self.assertIn("https://quote.eastmoney.com/sh600519.html#fullScreenChart", text)
             self.assertIn('class="btn"', text)
             self.assertIn("贵州茅台", text)
+            # 导航页是唯一产物：目录里不应该出现 Excel
+            self.assertFalse(list(td_path.rglob("*.xlsx")))
 
 
 if __name__ == "__main__":

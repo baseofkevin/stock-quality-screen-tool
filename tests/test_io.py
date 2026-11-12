@@ -1,23 +1,23 @@
 # -*- coding: utf-8 -*-
-"""批量产物：CSV 读取、结论反解、XLSX、导航页。"""
+"""批量产物：CSV 读取、结论反解、导航页。"""
 import sys
 import tempfile
 import unittest
-import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import config
+import stock_report
 import support
 from screen.batch import (CODE_COLUMN_CANDIDATES, EASTMONEY_COLUMN,
-                          LINK_COLUMN, SCORE_COLUMN, CsvError,
+                          LINK_COLUMN, SCORE_COLUMN, CsvTable, CsvError,
                           eastmoney_link_cell, eastmoney_url,
                           ensure_result_columns, link_target, read_csv_table,
                           report_link_cell, report_uri)
 from screen.index_html import write_index_html
 from screen.render import render_html
 from screen.summary import SummaryError, extract_score_summary
-from screen.xlsx import write_report_xlsx
 
 
 class CsvReadTest(unittest.TestCase):
@@ -121,57 +121,19 @@ class LinkHelperTest(unittest.TestCase):
         self.assertIn("东方财富网股票详情", cell)
 
 
-class XlsxTest(unittest.TestCase):
-    def _table(self, td):
-        out = Path(td) / "reports"
-        out.mkdir()
-        report = out / "报告.html"
-        report.write_text("<html>ok</html>", encoding="utf-8")
-        csv_path = Path(td) / "rows.csv"
-        csv_path.write_bytes("\ufeff代码,名称\r\n600519,贵州茅台\r\n000001,平安银行\r\n".encode())
-        table = read_csv_table(csv_path)
-        ensure_result_columns(table)
-        table.rows[0][SCORE_COLUMN] = "可买"
-        table.rows[0][LINK_COLUMN] = report_link_cell(report)
-        table.rows[0][EASTMONEY_COLUMN] = eastmoney_link_cell("600519")
-        table.rows[1][SCORE_COLUMN] = "生成失败"
-        table.rows[1][LINK_COLUMN] = ""
-        return table, out
+class XlsxRemovedTest(unittest.TestCase):
+    """0.9.10 起彻底移除 Excel 产物：模块、配置项、调用链都要消失。"""
 
-    def test_sheet_and_rels(self):
-        with tempfile.TemporaryDirectory() as td:
-            table, _ = self._table(td)
-            xlsx = write_report_xlsx(table)
-            self.assertTrue(xlsx.is_file())
-            with zipfile.ZipFile(xlsx) as zf:
-                names = set(zf.namelist())
-                sheet = zf.read("xl/worksheets/sheet1.xml").decode("utf-8")
-                rels = zf.read("xl/worksheets/_rels/sheet1.xml.rels").decode("utf-8")
-            for part in ("[Content_Types].xml", "_rels/.rels", "xl/workbook.xml",
-                         "xl/styles.xml", "xl/worksheets/sheet1.xml"):
-                self.assertIn(part, names)
-            self.assertIn("报告链接", sheet)
-            self.assertIn("东方财富网股票详情", sheet)
-            self.assertIn("可买", sheet)
-            self.assertIn("<hyperlink", sheet)
-            self.assertIn("autoFilter", sheet)
-            self.assertIn("file:///", rels)
-            self.assertIn("https://quote.eastmoney.com/sh600519.html", rels)
+    def test_module_is_gone(self):
+        with self.assertRaises(ImportError):
+            __import__("screen.xlsx")
 
-    def test_missing_report_link_shows_dash(self):
-        with tempfile.TemporaryDirectory() as td:
-            table, _ = self._table(td)
-            xlsx = write_report_xlsx(table)
-            with zipfile.ZipFile(xlsx) as zf:
-                sheet = zf.read("xl/worksheets/sheet1.xml").decode("utf-8")
-            self.assertIn("—", sheet)
+    def test_config_has_no_xlsx_dir(self):
+        self.assertFalse(hasattr(config, "XLSX_OUT_DIR"))
 
-    def test_custom_output_path(self):
-        with tempfile.TemporaryDirectory() as td:
-            table, _ = self._table(td)
-            target = Path(td) / "nested" / "结果.xlsx"
-            self.assertEqual(write_report_xlsx(table, target), target)
-            self.assertTrue(target.is_file())
+    def test_cli_has_no_xlsx_helper(self):
+        self.assertFalse(hasattr(stock_report, "_xlsx_target"))
+        self.assertFalse(hasattr(stock_report, "write_report_xlsx"))
 
 
 class IndexHtmlTest(unittest.TestCase):
@@ -240,6 +202,97 @@ class IndexHtmlTest(unittest.TestCase):
             # 导航页自带搜索用的 <script>，这里只检查注入内容被转义进单元格
             self.assertIn('<td class="code">600519&lt;script&gt;</td>', text)
             self.assertNotIn("600519<script>", text)
+
+
+class IndexHtmlExtraColumnsTest(unittest.TestCase):
+    """导航页新增的 5 列：原样透传输入 CSV，只做格式化，不补算。"""
+
+    HEADER = ("代码", "名称", "二级行业", "毛利率改善",
+              "池内换手分位", "分位星级", "总市值（亿）")
+
+    def _table(self, td, body: str):
+        out = Path(td) / "reports"
+        out.mkdir()
+        csv_path = Path(td) / "rows.csv"
+        csv_path.write_bytes(("\ufeff" + ",".join(self.HEADER) + "\r\n" + body).encode())
+        table = read_csv_table(csv_path)
+        ensure_result_columns(table)
+        table.rows[0][SCORE_COLUMN] = "观察"
+        return table, out
+
+    def test_header_has_all_ten_columns(self):
+        with tempfile.TemporaryDirectory() as td:
+            table, out = self._table(td, "sh603355,莱克电气,小家电,否：20.84→18.83,1.5,***,197.42\r\n")
+            text = write_index_html(table, out).read_text(encoding="utf-8")
+            for name in ("代码", "名称", "综合评分", "二级行业", "毛利率改善",
+                         "池内换手分位", "分位星级", "总市值（亿）", "报告", "东方财富网"):
+                self.assertIn(f"<th>{name}</th>", text)
+            self.assertEqual(text.count("<th>"), 10)
+
+    def test_values_are_passed_through_verbatim(self):
+        with tempfile.TemporaryDirectory() as td:
+            table, out = self._table(td, "sh603355,莱克电气,小家电,否：20.84→18.83,1.5,***,197.42\r\n")
+            text = write_index_html(table, out).read_text(encoding="utf-8")
+            self.assertIn("<td>小家电</td>", text)
+            self.assertIn("1.5<span class=\"unit\">%</span>", text)
+            self.assertIn('<span class="stars">***</span>', text)
+            self.assertIn("<td class=\"num\">197.42</td>", text)
+
+    def test_margin_column_keeps_only_yes_or_no(self):
+        """CSV 里毛利率是一整句，导航页只留开头的「是/否」。"""
+        with tempfile.TemporaryDirectory() as td:
+            table, out = self._table(
+                td,
+                "sh600368,五洲交通,铁路公路,是：55.91→63.52（环比改善）；营收环比 +13.3%,16.5,***,70.18\r\n"
+                "sz002302,西部建设,水泥,否：7.34→5.70（环比未改善）,1.6,**,60.21\r\n",
+            )
+            text = write_index_html(table, out).read_text(encoding="utf-8")
+            self.assertIn('<span class="yes">是</span>', text)
+            self.assertIn('<span class="no">否</span>', text)
+            # 句子里的数字不能漏进导航页
+            self.assertNotIn("55.91", text)
+            self.assertNotIn("环比改善", text)
+
+    def test_margin_unknown_renders_placeholder(self):
+        with tempfile.TemporaryDirectory() as td:
+            table, out = self._table(td, "sh603355,莱克电气,小家电,不确定,1.5,***,197.42\r\n")
+            text = write_index_html(table, out).read_text(encoding="utf-8")
+            self.assertNotIn('<span class="yes">', text)
+            self.assertNotIn('<span class="no">', text)
+            self.assertIn('<span class="na">—</span>', text)
+
+    def test_empty_cells_show_placeholder_not_zero(self):
+        """空值一律显示占位符 —— 不补 0、不留白格。"""
+        with tempfile.TemporaryDirectory() as td:
+            table, out = self._table(td, "sh603355,莱克电气,,,,\r\n")
+            text = write_index_html(table, out).read_text(encoding="utf-8")
+            self.assertIn('<span class="na">—</span>', text)
+            self.assertNotIn("0.00", text)
+            self.assertNotIn("<td></td>", text)
+
+    def test_csv_without_extra_columns_still_renders_ten_columns(self):
+        """输入 CSV 没有这几列时，导航页照样出 10 栏（值全部为占位符）。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "reports"
+            out.mkdir()
+            csv_path = Path(td) / "rows.csv"
+            csv_path.write_bytes("\ufeff代码,名称\r\n600519,贵州茅台\r\n".encode())
+            table = read_csv_table(csv_path)
+            ensure_result_columns(table)
+            text = write_index_html(table, out).read_text(encoding="utf-8")
+            self.assertEqual(text.count("<th>"), 10)
+            self.assertIn('<td class="num"><span class="na">—</span></td>', text)
+
+    def test_empty_table_colspan_matches_columns(self):
+        """空表兜底行的 colspan 必须跟着列数走，不能写死 5。"""
+        with tempfile.TemporaryDirectory() as td:
+            csv_path = Path(td) / "rows.csv"
+            csv_path.write_bytes("\ufeff代码,名称\r\n".encode())     # 只有表头，read_csv_table 会拒绝
+            table = CsvTable(path=csv_path, fieldnames=["代码", "名称"],
+                             rows=[], code_column="代码")
+            ensure_result_columns(table)
+            text = write_index_html(table, Path(td)).read_text(encoding="utf-8")
+            self.assertIn('colspan="10"', text)
 
 
 class SummaryTest(unittest.TestCase):

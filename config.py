@@ -8,14 +8,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-VERSION = "0.9.9"
+VERSION = "0.9.10"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT_DIR = str(PROJECT_DIR / "html-report")
-# 批量模式的结果 Excel：与 html-report/ 同级，文件名沿用输入 CSV 的主名。
-# 不写在输入 CSV 旁边——输入目录不该被产物污染，产物集中在一处才好找。
+# 批量模式的产物只有两处：html-report/ 里的单股 HTML、同目录的导航页。
 # 输入 CSV 本身只读：批量不写任何 CSV，输入表一个字节都不动。
-XLSX_OUT_DIR = str(PROJECT_DIR / "xlsx-output")
 
 # ---- 图表窗口 -------------------------------------------------------------
 TREND_YEARS = 5             # 利润率曲线看最近 5 年

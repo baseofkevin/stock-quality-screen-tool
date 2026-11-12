@@ -10,10 +10,9 @@
 批量（读取 CSV 的代码列，多线程生成报告；输入 CSV 只读，不写任何 CSV）：
     python3 stock_report.py --csv ../stock-kline-screen-tool/csv_output/选股_2026-11-06.csv
 
-批量产物：HTML 进 --out-dir（默认 html-report/）；同目录生成导航页
-`<输入 CSV 主名>.html`；结果 Excel 进 config.XLSX_OUT_DIR（默认 xlsx-output/，
-文件名沿用输入 CSV 主名）。**输入 CSV 本身不会被改动**，指向只读表也安全；
-批量不产出任何 CSV，评分与链接只体现在导航页和 Excel 里。
+批量产物只有两处：HTML 进 --out-dir（默认 html-report/）；同目录生成导航页
+`<输入 CSV 主名>.html`。**输入 CSV 本身不会被改动**，指向只读表也安全；
+批量不产出 CSV，也不产出 Excel：评分、链接与二级行业等扩展列只体现在导航页里。
 """
 from __future__ import annotations
 
@@ -49,7 +48,6 @@ from screen.render import render_html  # noqa: E402
 from screen.score import compute_scores  # noqa: E402
 from screen.summary import SummaryError, extract_score_summary  # noqa: E402
 from screen.validate import ScreenError, SkipStock, validate  # noqa: E402
-from screen.xlsx import write_report_xlsx  # noqa: E402
 
 
 def _safe_name(value: str) -> str:
@@ -85,16 +83,6 @@ def _find_existing_report(out_dir: Path, code: str) -> Path | None:
     return max(matches, key=lambda p: p.stat().st_mtime)
 
 
-def _xlsx_target(table) -> Path:
-    """批量结果 Excel 的落盘位置：`xlsx-output/<输入 CSV 主名>.xlsx`。
-
-    以前用 `table.path.with_suffix(".xlsx")`，Excel 会落在输入 CSV 旁边，
-    输入目录被产物污染；现在统一进项目内的 `config.XLSX_OUT_DIR`
-    （与 `html-report/` 同级），和导航页一起当产物看。
-    """
-    return Path(config.XLSX_OUT_DIR) / f"{Path(table.path).stem}.xlsx"
-
-
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="企业质量初筛：质量 + 估值 + 机构预期，输出 HTML；支持 CSV 批量"
@@ -104,9 +92,9 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument(
         "--csv", "--csv-input", dest="csv_input", metavar="CSV",
         help="批量模式：读取该 CSV 的代码列（代码 / 股票代码 / 证券代码 / code），逐只生成报告。"
-             "输入 CSV 只读，不会被改动，也不会产出新的 CSV；评分与链接只体现在"
-             "导航页（--out-dir 下的 <输入 CSV 主名>.html）和结果 Excel"
-             "（xlsx-output/ 下的同名文件）里。--csv-input 是这个参数的旧名，行为完全一致。",
+             "输入 CSV 只读，不会被改动，也不会产出新的 CSV 或 Excel；评分、链接与"
+             "二级行业等扩展列只体现在导航页（--out-dir 下的 <输入 CSV 主名>.html）里。"
+             "--csv-input 是这个参数的旧名，行为完全一致。",
     )
     p.add_argument("--out-dir", default=config.DEFAULT_OUT_DIR, help=f"输出目录，默认 {config.DEFAULT_OUT_DIR}")
     p.add_argument("--name", default="", help="覆盖报告文件名中的公司名（仅单股票模式）")
@@ -397,10 +385,9 @@ def _run_batch(args: argparse.Namespace) -> int:
             pool.shutdown(wait=False, cancel_futures=True)
             try:
                 write_index_html(table, out_dir)
-                write_report_xlsx(table, _xlsx_target(table))
             except Exception:
                 pass
-            print("\n已中断：本次已完成的报告已保存，导航页与 Excel 按已完成部分生成；"
+            print("\n已中断：本次已完成的报告已保存，导航页按已完成部分生成；"
                   "重新运行会跳过已有报告。", file=sys.stderr)
             sys.stdout.flush()
             sys.stderr.flush()
@@ -421,12 +408,11 @@ def _run_batch(args: argparse.Namespace) -> int:
         else:
             ok += 1
 
-    nav_paths: list[Path] = []
+    nav_path: Path | None = None
     try:
-        nav_paths.append(write_index_html(table, out_dir))
-        nav_paths.append(write_report_xlsx(table, _xlsx_target(table)))
+        nav_path = write_index_html(table, out_dir)
     except Exception as exc:  # noqa: BLE001
-        print(f"警告：导航文件生成失败（HTML 报告不受影响）：{exc}", file=sys.stderr)
+        print(f"警告：导航页生成失败（HTML 报告不受影响）：{exc}", file=sys.stderr)
 
     if not args.quiet:
         print(f"\n批量完成：成功 {ok} 行（复用 {reused_rows} 行），失败 {failed} 行，"
@@ -437,9 +423,8 @@ def _run_batch(args: argparse.Namespace) -> int:
             print(f"  本次生成 {done_count}/{len(pending_codes)} 只")
         print(f"  输入 CSV {table.path}（只读，未改动）")
         print(f"  报告目录 {out_dir}")
-        for nav in nav_paths:
-            label = "导航页  " if nav.suffix.lower() == ".html" else "Excel   "
-            print(f"  {label} {nav}")
+        if nav_path is not None:
+            print(f"  导航页   {nav_path}")
     return 0 if failed == 0 else 1
 
 

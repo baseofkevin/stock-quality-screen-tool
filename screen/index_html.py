@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""生成浏览器里的报告导航页：每只股票一个「报告链接」按钮。"""
+"""生成浏览器里的报告导航页：每只股票一行，含结论、扩展指标与两个链接。"""
 from __future__ import annotations
 
 import html
@@ -9,10 +9,28 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import url2pathname
 
-from screen.batch import (EASTMONEY_COLUMN, EASTMONEY_LINK_TEXT,
-                          LINK_COLUMN, SCORE_COLUMN, CsvTable, eastmoney_url, link_target)
+from screen.batch import (CAP_COLUMN, EASTMONEY_COLUMN, EASTMONEY_LINK_TEXT,
+                          EMPTY_TEXT, INDUSTRY2_COLUMN, LINK_COLUMN,
+                          MARGIN_COLUMN, SCORE_COLUMN, STAR_COLUMN,
+                          TURNOVER_PCT_COLUMN, CsvTable, eastmoney_url,
+                          link_target, summary_cell)
 
 LINK_TEXT = "报告链接"
+
+# 列定义集中在这里：表头、空表 colspan 全部由它推出来，
+# 以后再加列只改这一处，不会出现「表头 10 列、数据 9 列」的错位。
+COLUMNS: tuple[str, ...] = (
+    "代码",
+    "名称",
+    "综合评分",
+    INDUSTRY2_COLUMN,
+    MARGIN_COLUMN,
+    TURNOVER_PCT_COLUMN,
+    STAR_COLUMN,
+    CAP_COLUMN,
+    "报告",
+    "东方财富网",
+)
 
 
 def _path_from_target(cell: str, base_dir: Path) -> Path | None:
@@ -45,6 +63,12 @@ def _badge_class(score: str) -> str:
     return "watch"
 
 
+def _plain(value: str) -> str:
+    """单元格里没值就显示占位符，有值就转义输出。"""
+    text = str(value or "").strip()
+    return html.escape(text) if text else f'<span class="na">{EMPTY_TEXT}</span>'
+
+
 def _write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -63,7 +87,7 @@ def write_index_html(table: CsvTable, out_dir: str | Path) -> Path:
     """在报告目录生成导航页，按钮直接打开同目录下的 HTML。
 
     导航页文件名跟输入 CSV 主名一致（`rows.csv` → `rows.html`），
-    和同名 XLSX 用同一套命名，方便一眼对上是哪份输入跑出来的。
+    和同一次运行的产物对得上号。
     """
     out = Path(out_dir).resolve()
     target = out / f"{Path(table.path).stem}.html"
@@ -71,8 +95,10 @@ def write_index_html(table: CsvTable, out_dir: str | Path) -> Path:
     counts = {"buy": 0, "watch": 0, "avoid": 0, "unknown": 0, "missing": 0}
 
     for row in table.rows:
-        code = html.escape(str(row.get(table.code_column, "")))
-        name = html.escape(str(row.get("名称", "") or row.get("name", "")))
+        code_raw = str(row.get(table.code_column, ""))
+        code = html.escape(code_raw)
+        name_raw = str(row.get("名称", "") or row.get("name", ""))
+        name = html.escape(name_raw)
         score = html.escape(str(row.get(SCORE_COLUMN, "")))
         report_path = _path_from_target(str(row.get(LINK_COLUMN, "")), table.path.parent)
         href = ""
@@ -88,7 +114,7 @@ def write_index_html(table: CsvTable, out_dir: str | Path) -> Path:
             counts["missing"] += 1
         eastmoney = link_target(str(row.get(EASTMONEY_COLUMN, "")))
         if not eastmoney:
-            eastmoney = eastmoney_url(str(row.get(table.code_column, "")))
+            eastmoney = eastmoney_url(code_raw)
         if eastmoney:
             eastmoney_link = (f'<a class="btn alt" href="{html.escape(eastmoney)}" '
                               f'target="_blank" rel="noopener">{EASTMONEY_LINK_TEXT}</a>')
@@ -96,11 +122,39 @@ def write_index_html(table: CsvTable, out_dir: str | Path) -> Path:
             eastmoney_link = '<span class="btn disabled">无链接</span>'
         badge = _badge_class(str(row.get(SCORE_COLUMN, "")))
         counts[badge] += 1
+
+        # 五列全部原样透传；毛利率由 summary_cell 压成「是 / 否」
+        industry2 = summary_cell(row, INDUSTRY2_COLUMN)
+        margin = summary_cell(row, MARGIN_COLUMN)
+        pct = summary_cell(row, TURNOVER_PCT_COLUMN)
+        stars = summary_cell(row, STAR_COLUMN)
+        cap = summary_cell(row, CAP_COLUMN)
+
+        if margin == "是":
+            margin_html = '<span class="yes">是</span>'
+        elif margin == "否":
+            margin_html = '<span class="no">否</span>'
+        else:
+            margin_html = f'<span class="na">{EMPTY_TEXT}</span>'
+
+        stars_html = (f'<span class="stars">{html.escape(stars)}</span>' if stars
+                      else f'<span class="na">{EMPTY_TEXT}</span>')
+        pct_html = (f'{html.escape(pct)}<span class="unit">%</span>' if pct
+                    else f'<span class="na">{EMPTY_TEXT}</span>')
+
+        # data-search 带上新增的几列：搜「白色家电」「是」也能筛出对应行
+        search = " ".join(x for x in (code_raw, name_raw, score, industry2,
+                                      margin, pct, stars, cap) if x)
         rows_html.append(
-            f'<tr data-search="{code} {name} {score}">'
+            f'<tr data-search="{html.escape(search)}">'
             f'<td class="code">{code}</td>'
             f'<td>{name}</td>'
-            f'<td><span class="badge {badge}">{score or "—"}</span></td>'
+            f'<td><span class="badge {badge}">{score or EMPTY_TEXT}</span></td>'
+            f'<td>{_plain(industry2)}</td>'
+            f'<td class="center">{margin_html}</td>'
+            f'<td class="num">{pct_html}</td>'
+            f'<td class="center">{stars_html}</td>'
+            f'<td class="num">{_plain(cap)}</td>'
             f'<td class="action">{link}</td>'
             f'<td class="action">{eastmoney_link}</td>'
             "</tr>"
@@ -136,6 +190,13 @@ def write_index_html(table: CsvTable, out_dir: str | Path) -> Path:
   tr:hover td {{ background:#f8fbfd; }}
   td.code {{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#486581; white-space:nowrap; }}
   td.action {{ width:150px; }}
+  td.num {{ text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }}
+  td.center {{ text-align:center; white-space:nowrap; }}
+  .unit {{ color:var(--muted); font-size:12px; margin-left:1px; }}
+  .na {{ color:#b0bcc8; }}
+  .yes {{ color:#1f7a4d; font-weight:600; }}
+  .no {{ color:#8a94a0; }}
+  .stars {{ color:#c98a00; letter-spacing:1px; font-weight:700; }}
   .btn {{ display:inline-block; padding:7px 14px; border-radius:7px; background:var(--brand);
           color:#fff; text-decoration:none; font-weight:600; text-align:center; white-space:nowrap; }}
   .btn:hover {{ background:#174a6d; }}
@@ -165,8 +226,8 @@ def write_index_html(table: CsvTable, out_dir: str | Path) -> Path:
 <div class="wrap">
   <div class="toolbar"><input id="q" type="search" placeholder="搜索代码、名称或结论…"></div>
   <table id="table">
-    <thead><tr><th>代码</th><th>名称</th><th>综合评分</th><th>报告</th><th>东方财富网</th></tr></thead>
-    <tbody>{''.join(rows_html) if rows_html else '<tr><td colspan="5" class="empty">没有数据</td></tr>'}</tbody>
+    <thead><tr>{''.join(f'<th>{html.escape(c)}</th>' for c in COLUMNS)}</tr></thead>
+    <tbody>{''.join(rows_html) if rows_html else f'<tr><td colspan="{len(COLUMNS)}" class="empty">没有数据</td></tr>'}</tbody>
   </table>
 </div>
 <script>

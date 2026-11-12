@@ -19,6 +19,7 @@
 
 | 版本 | 日期 | 一句话 |
 |---|---|---|
+| 0.9.10 | 2026-11-12 15:20 | 导航页增 5 列（原样取自输入 CSV）；彻底删除 Excel 产物 |
 | 0.9.9 | 2026-11-11 14:38 | 批量模式输入 CSV 只读，且不再写任何 CSV（结果看导航页 / Excel） |
 | 0.9.8 | 2026-11-11 14:04 | P3 八条结构清理（合并重复实现、删死代码、报告文字由 config 生成）+ P4 十二条文档同步 |
 | 0.9.7 | 2026-11-11 13:31 | 导航页文件名改为跟随输入 CSV 主名（`index.html` → `<CSV 主名>.html`） |
@@ -32,6 +33,72 @@
 | 0.8.1 | 2026-11-10 15:20 | 毛利率环比改善从一句「未改善」改成六个数字 + 点名 |
 | 0.8.0 | 2026-11-10 14:47 | 第一、二节指标改造（护城河三证据、14 项检查 4 组） |
 | 0.7.11 | 2026-11-10 13:28 | 全篇估值口径统一为「口径日收盘」 |
+
+---
+
+## 2026-11-12 15:20 +08:00
+
+### 新增（导航页新增 5 列，v0.9.9 → 0.9.10）
+
+- `screen/index_html.py`：导航页表头由 5 列扩到 10 列，每只股票所在行新增
+  `二级行业`、`毛利率改善`、`池内换手分位`、`分位星级`、`总市值（亿）`。
+  列定义集中在模块级 `COLUMNS`，表头与空表 `colspan` 都由它推出来
+  （原来 `colspan="5"` 是写死的，加列就会错位）。
+- `screen/batch.py`：新增 5 个列名常量与 `SUMMARY_COLUMNS`，
+  `ensure_result_columns()` 一并登记，重复运行时复用同名列；
+  新增 `summary_cell()` 统一取值、`margin_flag()` 把毛利率压成一个字。
+- `screen/index_html.py`：新增 `.num`（右对齐、等宽数字）、`.center`、`.na`（空值占位）、
+  `.yes` / `.no`（毛利率）、`.stars` 样式；搜索框的 `data-search` 带上新增几列，
+  可以按「白色家电」「是」过滤。
+
+**口径（重要）**：这 5 列**只做原样透传**，值来自输入 CSV 的同名列，
+批量模式不重新取数、不重算、不补空。
+
+- 不重算的理由：上游选股表（`stock-kline-screen-tool`）已经把这 5 列算好了，
+  再算一遍只会出现「导航页与 CSV 对不上」，读者不知道该信哪个。
+- 唯一例外是格式：CSV 的 `毛利率改善` 是整句
+  （`否：20.84→18.83（环比未改善）；营收环比 +3.0%；同比 -2.04pct（上年同季 20.87%）`），
+  导航页只显示开头的 `是` / `否`，细节点进报告第二节看。开头不是「是/否」一律留空。
+- 缺值一律显示 `—`：CSV 没有这一列、或该行为空时，不拿报告里另算的数顶替，
+  也不补 0（实测 `选股_2026-11-10.csv` 的 `分位星级` 有 26 行为空，导航页照实留空）。
+
+### 删除（彻底移除 Excel 产物）
+
+- 删除 `screen/xlsx.py`（整份手写 OOXML 生成器，256 行）。
+- 删除项目内的 `xlsx-output/` 目录（7 个历史 xlsx，`选股_2026-10-16` ~ `选股_2026-11-10`）。
+  删除前已整体备份到 `.xlsx-output-backup-20261112-152827/`（112K，7 个文件），
+  并在 `.gitignore` 加规则挡住备份目录，避免误入库。
+- `stock_report.py`：删掉 `from screen.xlsx import write_report_xlsx`、`_xlsx_target()`，
+  以及中断分支与正常结束处的两处调用；`--csv` 的帮助文案与模块 docstring
+  不再提 `xlsx-output/`。
+- `config.py`：删除 `XLSX_OUT_DIR`。批量产物只剩两处：`html-report/` 里的单股 HTML、
+  同目录的导航页。
+- `stock_report.py`：结束语从 `nav_paths` 循环简化为单个 `nav_path`
+  （现在只会有一个产物，不必再按后缀判断是「导航页」还是「Excel」）。
+- `.gitignore`：`/xlsx-output/` 规则保留（拦住旧目录意外回流），新增
+  `/.xlsx-output-backup-*/` 挡住删除前的本地备份。
+
+### 影响
+
+- `html-report/<主名>.html` 的列数由 5 变 10：按列号解析导航页的外部脚本需要跟着改。
+- 批量不再产生 `xlsx-output/` 目录，项目内已无任何 `.xlsx` 产物。
+- 输入 CSV 仍然只读：新增的 5 列只在内存表里参与导航页渲染，不回写、不新建 CSV。
+- 单股报告（`--stock-code`）完全不受影响：这 5 列只存在于批量导航页。
+
+### 测试
+
+- `tests/test_io.py`：删掉 `XlsxTest`，改为 `XlsxRemovedTest`（模块不可导入、
+  `config` 无 `XLSX_OUT_DIR`、CLI 无 `_xlsx_target`）；新增
+  `IndexHtmlExtraColumnsTest` 7 个用例——10 列表头、原样透传、毛利率只留是/否、
+  毛利率未知显示占位、空值不补 0、CSV 缺列仍出 10 栏、空表 `colspan`。
+- `tests/test_cli.py`：`test_defaults` 去掉 `XLSX_OUT_DIR` 断言；
+  新增 `test_no_xlsx_output_config`（配置项与模块都必须消失）；
+  帮助文案断言由「必须包含 xlsx-output」反过来改成「不得出现 xlsx-output」；
+  批量用例 `test_batch_writes_report_nav_and_xlsx` 改名 `..._report_and_nav_only`，
+  并断言输出目录里只有两个 `.html`、任何位置都没有 `.xlsx`。
+- `tests/test_smoke.py`：删掉 `zipfile` 与 `write_report_xlsx` 导入、`setUp` 里的
+  `XLSX_OUT_DIR` patch；`test_xlsx_and_index_contain_clickable_report_links`
+  收窄为只测导航页，并断言不产生 Excel。
 
 ---
 
