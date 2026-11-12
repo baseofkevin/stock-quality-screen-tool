@@ -108,7 +108,8 @@ def write_index_html(table: CsvTable, out_dir: str | Path) -> Path:
             except ValueError:
                 href = report_path.resolve().as_uri()
         if href:
-            link = f'<a class="btn" href="{html.escape(href)}">{LINK_TEXT}</a>'
+            link = (f'<a class="btn" href="{html.escape(href)}" '
+                    f'target="_blank" rel="noopener">{LINK_TEXT}</a>')
         else:
             link = '<span class="btn disabled">无报告</span>'
             counts["missing"] += 1
@@ -214,7 +215,7 @@ def write_index_html(table: CsvTable, out_dir: str | Path) -> Path:
 <body>
 <header>
   <h1>企业质量初筛报告导航</h1>
-  <div class="sub">{html.escape(table.path.name)} · 共 {total} 行 · 点击「{LINK_TEXT}」直接打开 HTML</div>
+  <div class="sub">{html.escape(table.path.name)} · 共 {total} 行 · 点击「{LINK_TEXT}」在新标签页打开</div>
   <div class="stats">
     <span class="stat">买入类 {counts['buy']}</span>
     <span class="stat">观察类 {counts['watch']}</span>
