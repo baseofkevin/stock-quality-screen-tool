@@ -1,0 +1,93 @@
+# moat_annotations.yaml —— 垄断性人工标注表（2.13.0 新增）
+#
+# 约定（见《护城河与垄断性判定改造建议-20261113.md》§3.2）：
+# - 键 = 6 位股票代码（小写，不带交易所前缀）；
+# - moat_type 枚举：独家资源 / 配额牌照 / 特许经营 / 独家品种 / 技术壁垒 / 网络 / 无标注
+# - 每条必须带 sources（可点击的核实来源）和 verified（核实日期 YYYY-MM-DD）；
+# - verified 超过 12 个月，报告里自动显示「待复核」，不删除旧标注；
+# - 无标注的公司 = 工具显示「无标注」，绝不从财务数据反推垄断性。
+# - 本表只标注事实，不打分；垄断 ≠ 赚钱（见中盐化工案例），不进 Q/V。
+
+sh601958:
+  moat_type: 独家资源
+  evidence: 金堆城钼矿钼原矿石资源量 42,448.78 万吨、东沟钼矿 46,419.10 万吨，权益储量占全国 25% 以上，居国内首位
+  controller: 金堆城钼业集团 → 陕西有色金属控股集团（陕西省人民政府）
+  sources:
+    - https://static.sse.com.cn/bond/bridge2/disclosure/announcement/c/202603/c853fa_20260319_W94D.pdf
+  verified: 2026-11-13
+
+sh600497:
+  moat_type: 独家资源
+  evidence: 中铝集团旗下铅锌锗全产业链龙头，锗资源储量全球前列，中国铜业多金属协同
+  controller: 中国铝集团（国务院国资委）
+  sources:
+    - https://finance.sina.com.cn/roll/2026-06-16/doc-inicqxfn9494940.shtml
+  verified: 2026-11-13
+
+sh601168:
+  moat_type: 独家资源
+  evidence: 玉龙铜矿持股 58%（2025 年矿产铜 15.2 万吨）、获各琦铜矿 100%，青海省属企业营收占比 75%
+  controller: 青海省人民政府国资委
+  sources:
+    - https://sns.sseinfo.com/resources/images/upload/202608/202608111443033227534627.pdf
+    - http://stock.finance.sina.com.cn/stock/go.php/vReport_Show/kind/company/rptid/838991132038/index.phtml
+  verified: 2026-11-13
+
+sz002096:
+  moat_type: 特许经营
+  evidence: 民爆生产许可，工业炸药管理产能 62.95 万吨/年、电子雷管 7550 万发/年，行业产能领先；民爆为许可制行业
+  controller: 中国能建（国务院国资委）
+  sources:
+    - http://www.expl.ceec.net.cn/col/col12192/index.html
+  verified: 2026-11-13
+
+sh600111:
+  moat_type: 配额牌照
+  evidence: 控股股东包钢集团拥有白云鄂博矿独家开采权，向公司供应稀土精矿；稀土开采/冶炼分离指标向公司集中配给
+  controller: 包钢集团（内蒙古自治区国资）
+  sources:
+    - https://data.eastmoney.com/report/info/AP202502211643358824.html
+  verified: 2026-11-13
+
+sz000831:
+  moat_type: 配额牌照
+  evidence: 中国稀土集团旗下唯一上市平台，承载中重稀土资产整合；稀土配额制行业
+  controller: 中国稀土集团（国务院国资委）
+  sources:
+    - https://businesstimescn.com/articles/632127.html
+    - https://finance.sina.cn/2025-05-14/detail-inewprws9194960.d.html
+  verified: 2026-11-13
+
+sz000792:
+  moat_type: 独家资源
+  evidence: 察尔汗盐湖钾锂资源，国内钾肥绝对龙头；实控人已由青海省政府国资委变更为中国五矿
+  controller: 中国五矿（国务院国资委）
+  sources:
+    - https://m.cnstock.com/commonDetail/661714
+    - https://finance.sina.com.cn/roll/2026-03-31/doc-inhsvwqa9060629.shtml
+  verified: 2026-11-13
+
+sh600328:
+  moat_type: 独家资源
+  evidence: 金属钠产能 6.5 万吨世界最大，占全球产能 30% 以上；另有 1 万吨扩建在建
+  controller: 中盐集团（国务院国资委）
+  sources:
+    - https://ir.p5w.net/question/000196B00C0C9F7C4CB3AA079BE67D9403E9.shtml
+    - https://www.163.com/dy/article/KI4KFNEM053469RG.html
+  verified: 2026-11-13
+
+sh600976:
+  moat_type: 独家品种
+  evidence: 体外培育牛黄为国家保密配方级独家品种，天然牛黄稀缺替代方案
+  controller: 无国资背景（民营）
+  sources: []
+  verified: 2026-11-13
+
+sz000629:
+  moat_type: 独家资源
+  evidence: 攀钢钒制品分公司为全球最大钒铁生产基地，钒渣-钒制品一体化
+  controller: 鞍钢集团（国务院国资委）
+  sources:
+    - http://mo.ansteel.cn/news/xinwenzixun/2023-12-15/26f93133218a512f0f0429a166b9aa0b.html
+    - https://www.pgvt.cn/Uploads/Download/2024-07-16/6696173fa4f16.pdf
+  verified: 2026-11-13

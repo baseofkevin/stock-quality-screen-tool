@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-VERSION = "0.9.10"
+VERSION = "0.9.11"   # 2.13.0 建议（改造文档）：盈利结构改名 + 垄断性标注 + 存续安全
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT_DIR = str(PROJECT_DIR / "html-report")
@@ -21,7 +21,7 @@ TREND_QUARTERS = TREND_YEARS * 4   # 5 年 = 20 个报告季度
 VALUATION_YEARS = 10        # PE/PB/PS 走势图取最近 10 年；不足 10 年按全部可用历史
 
 # ---- 估值参数 -------------------------------------------------------------
-WACC = 9.0                  # 无风险利率 + 风险溢价，默认 9%；用于 ROIC−WACC 与护城河
+WACC = 9.0                  # 无风险利率 + 风险溢价，默认 9%；用于 ROIC−WACC 与盈利结构判断
 RISK_FREE = 2.0
 
 # ---- 现金扣除与底线估值（仅展示，不进入 V 分） ---------------------------
@@ -113,7 +113,7 @@ SCORE_BAR_BAD = 45.0
 # ---- 毛利率稳定性的「水平」门槛（0.9.0 起） ------------------------------
 # σ 只说明“稳不稳”，不说明“高不高”：毛利率 5% 的公司 σ 再小也是稳定的低毛利，
 # 不该在稳定性这一格拿满 4 分。以 15% 为下限、25% 为满分线，
-# 上限 25 与护城河「定价权」用的是同一个门槛，两处口径可以互相解释。
+# 上限 25 与盈利结构「定价权」用的是同一个门槛，两处口径可以互相解释。
 QUALITY_GM_LEVEL_FLOOR = 15.0
 QUALITY_GM_LEVEL_FULL = 25.0
 QUALITY_ACCRUAL_YEARS = 3        # 应计利润取近 N 年中位数，避开单年一次性项目
@@ -202,7 +202,7 @@ FINANCIAL_INAPPLICABLE_CHECKS = (
     "margin_improve", "ar_gap", "inventory_gap", "construction", "cash_debt",
 )
 
-# ---- 第一节：护城河三证据（0.8.0 起替代 5 项加权评分） -------------------
+# ---- 第一节：盈利结构三证据（0.8.0 起替代 5 项加权评分；2.13.0 由「护城河」改名） --
 MOAT_GROSS_MARGIN_MIN = 25.0     # 定价权：5 年毛利率中位数下限（%）
 MOAT_GROSS_MARGIN_STD = 3.0      # 定价权：5 年毛利率标准差上限（pct）
 MOAT_ROIC_SPREAD_MIN = 5.0       # 资本回报：ROIC − WACC 下限（pct）

@@ -145,10 +145,45 @@ class SectionBusinessTest(unittest.TestCase):
 
     def test_moat_reasons_are_listed(self):
         section = _section_business(support.scored_data())
-        self.assertIn("护城河规则结论", section)
+        self.assertIn("盈利结构（三条证据）", section)
         self.assertIn("资本回报", section)
         self.assertIn("三条证据", section)
         self.assertNotIn("量化评分", section)      # 0.8.0 起不再显示 0~100 分
+        self.assertNotIn("护城河", section)        # 2.13.0 起「护城河」一词退出报告
+
+    def test_business_section_has_moat_and_solvency_lines(self):
+        """2.13.0 生意属性三段：无标注提示 + 存续安全 + 盈利结构 + 澄清文案。"""
+        section = _section_business(support.scored_data())
+        self.assertIn("垄断性标注：无标注", section)
+        self.assertIn("存续安全</div><div><b>坚固</b>", section)
+        self.assertIn("盈利结构弱 ≠ 没有垄断", section)
+        self.assertIn("不从财务数据反推垄断性", section)
+
+    def test_annotated_stock_shows_moat_with_sources(self):
+        """有标注的公司：显示类型/依据/控股股东/来源与核实日期。"""
+        data = support.scored_data()
+        data["resource_moat"] = {
+            "annotated": True, "moat_type": "独家资源",
+            "evidence": "金堆城钼矿资源量占全国 25% 以上",
+            "controller": "陕西有色金属控股集团",
+            "sources": ["https://example.com/a.pdf"],
+            "verified": "2026-11-13", "stale": False,
+        }
+        section = _section_business(data)
+        self.assertIn("垄断性标注", section)
+        self.assertIn("独家资源", section)
+        self.assertIn("陕西有色金属控股集团", section)
+        self.assertIn("https://example.com/a.pdf", section)
+        self.assertIn("核实 2026-11-13", section)
+        self.assertNotIn("待复核", section)
+
+    def test_stale_annotation_shows_review_badge(self):
+        data = support.scored_data()
+        data["resource_moat"] = {"annotated": True, "moat_type": "配额牌照",
+                                 "evidence": "x", "controller": "y",
+                                 "sources": [], "verified": "2024-01-01", "stale": True}
+        section = _section_business(data)
+        self.assertIn("待复核", section)
 
     def test_annual_table_limited_to_five_rows(self):
         section = _section_business(support.scored_data())

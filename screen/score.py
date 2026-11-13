@@ -2,6 +2,8 @@
 """质量分 Q、估值分 V、14 条风险检查、决策矩阵与跟踪清单。"""
 from __future__ import annotations
 
+import datetime as _dt
+import pathlib as _pl
 from typing import Any
 
 import config
@@ -844,6 +846,117 @@ def _fatal(data: dict[str, Any], checks: list[dict[str, Any]]) -> list[str]:
     return fatal
 
 
+def _solvency(data: dict[str, Any]) -> dict[str, Any]:
+    """存续安全（2.13.0 新增）：把「会不会倒闭」从 _fatal 的隐藏逻辑升级为正面标签。
+
+    四档：坚固 > 稳健 > 承压 > 危险，判据逐档放宽；命中任一致命项直接「危险」。
+    只展示，不进 Q/V；「危险」档时 _decision() 已由 _fatal() 打成回避，行为不变。
+    金融股不适用（FCF/有息负债口径不可比，沿用 FINANCIAL_INAPPLICABLE_CHECKS 机制）。
+    """
+    if _is_financial(data):
+        return {"level": "不适用", "not_applicable": True, "reasons": ["金融股口径不适用"]}
+    ys = _years(data)
+    latest = _latest(data)
+    if len(ys) < 3:
+        return {"level": "数据不足", "reasons": ["年报不足 3 年，无法判断存续安全"]}
+    checks = (data.get("risks") or {}).get("checks") or []
+    fatal = _fatal(data, checks)
+    if fatal:
+        return {"level": "危险", "fatal": fatal,
+                "reasons": ["命中致命项：" + "；".join(fatal)]}
+
+    fcfm = [y.get("fcf_margin") for y in ys if y.get("fcf_margin") is not None]
+    neg_fcf = sum(1 for v in fcfm if v is not None and v <= 0)
+    equity = latest.get("equity")
+    debt_ratio = (latest.get("debt") / equity) if (equity and latest.get("debt") is not None) else None
+    np_ttm = _net_cash_ratio(data)          # 净现比，与第二节「现金流质量」同源
+    cash_debt_hit = any(c.get("key") == "cash_debt" and c.get("status") == "hit" for c in checks)
+
+    evidence = {
+        "fcf_neg_years": neg_fcf,
+        "debt_to_equity": round(debt_ratio, 2) if debt_ratio is not None else None,
+        "net_cash_ratio": np_ttm,
+    }
+    if (neg_fcf <= 1 and debt_ratio is not None and debt_ratio <= 0.3
+            and np_ttm is not None and np_ttm >= 0.7):
+        level = "坚固"
+    elif neg_fcf <= 2 and debt_ratio is not None and debt_ratio <= 0.7:
+        level = "稳健"
+    elif neg_fcf >= 3 or cash_debt_hit or (np_ttm is not None and np_ttm < 0.5):
+        level = "承压"
+    else:
+        level = "稳健"
+    return {"level": level, "evidence": evidence, "fatal": [],
+            "reasons": [f"FCF 负年数 {neg_fcf}",
+                        f"有息负债/净资产 {_n(debt_ratio) if debt_ratio is not None else '—'}",
+                        f"净现比(TTM) {_n(np_ttm) if np_ttm is not None else '—'}"]}
+
+
+def _net_cash_ratio(data: dict[str, Any]) -> float | None:
+    """净现比 CFO/净利润(TTM)：与风险检查 cash_flow 同口径，取不到时返回 None。
+
+    checks 的 detail 是展示文案，不机器解析；这里直接从年度财务重算，
+    与风险检查 cash_ni 同源（(np_ttm or net_profit) / (ocf_ttm or ocf)）。
+    """
+    latest = _latest(data)
+    np_ttm = latest.get("np_ttm") or latest.get("net_profit")
+    ocf_ttm = latest.get("ocf_ttm") or latest.get("ocf")
+    if np_ttm is None or np_ttm <= 0:
+        return None
+    return div(ocf_ttm, np_ttm)
+
+
+# ---- 垄断性标注（2.13.0 新增）：人工维护，宁缺勿错 -------------------------
+
+_MOAT_TYPES = ("独家资源", "配额牌照", "特许经营", "独家品种", "技术壁垒", "网络", "无标注")
+_ANNOTATIONS_DIR = _pl.Path(__file__).resolve().parent.parent / "annotations"
+_ANNOTATIONS_FILE = _ANNOTATIONS_DIR / "moat_annotations.yaml"
+_ANNOTATION_MAX_AGE_DAYS = 365
+
+
+def load_resource_moat(code: str) -> dict[str, Any]:
+    """读 annotations/moat_annotations.yaml 的单条标注。
+
+    约定（改造建议 3.2）：
+    - 无标注 = {"annotated": False, "moat_type": "无标注"}，绝不从财务数据反推；
+    - verified 超 12 个月 → stale=True，报告显示「待复核」，旧标注不删除；
+    - 文件不存在 / 无 yaml 库 / 无该条 → 一律「无标注」，报错只写日志字段不抛出。
+    """
+    empty: dict[str, Any] = {"annotated": False, "moat_type": "无标注"}
+    code = (code or "").strip().lower()
+    if not code or not _ANNOTATIONS_FILE.exists():
+        return empty
+    try:
+        import yaml  # 延迟导入：无 yaml 库时退化为「无标注」，不阻塞出报告
+        raw = yaml.safe_load(_ANNOTATIONS_FILE.read_text(encoding="utf-8")) or {}
+    except Exception as exc:  # noqa: BLE001 —— 标注表坏了不能挡报告，记录原因即可
+        return {**empty, "load_error": f"标注表解析失败：{exc}"}
+    entry = raw.get(code)
+    if not isinstance(entry, dict):
+        # 键可能带交易所前缀（sh601958 / sz000629），按后缀再试一次
+        entry = next((v for k, v in raw.items()
+                      if isinstance(k, str) and k.lower().endswith(code)), None)
+    if not isinstance(entry, dict):
+        return empty
+    moat_type = str(entry.get("moat_type") or "无标注")
+    if moat_type not in _MOAT_TYPES:
+        moat_type = "无标注"
+    verified = entry.get("verified")
+    stale = False
+    if isinstance(verified, (_dt.date, _dt.datetime)):
+        vdate = verified.date() if isinstance(verified, _dt.datetime) else verified
+        stale = (_dt.date.today() - vdate).days > _ANNOTATION_MAX_AGE_DAYS
+    return {
+        "annotated": moat_type != "无标注",
+        "moat_type": moat_type,
+        "evidence": str(entry.get("evidence") or ""),
+        "controller": str(entry.get("controller") or ""),
+        "sources": [str(s) for s in (entry.get("sources") or []) if str(s).strip()],
+        "verified": str(verified or ""),
+        "stale": stale,
+    }
+
+
 def _forecast_metrics(data: dict[str, Any]) -> dict[str, Any]:
     """从机构预测中提取 V 分所需的三个原始值。
 
@@ -1164,11 +1277,17 @@ def _expectation_flags(data: dict[str, Any], v: dict[str, Any]) -> list[str]:
 
 
 
-def _moat(data: dict[str, Any]) -> dict[str, Any]:
-    """护城河：只看量化证据，不写行业故事，也不给 0~100 分。
+def _profit_structure(data: dict[str, Any]) -> dict[str, Any]:
+    """盈利结构：只看量化证据，不写行业故事，也不给 0~100 分。
 
     三条证据（手册 8.2）：定价权、资本回报、现金创造。
-    3 条成立 = 宽护城河；2 条 = 窄；≤1 条 = 无明显护城河。
+    3 条成立 = 强；2 条 = 中；≤1 条 = 弱。
+
+    历史注记（2.13.0）：本函数原叫「护城河」(_moat)。「护城河」一词会让读者
+    以为「无明显护城河 = 没有垄断」，但资源/牌照型公司（钼、稀土、盐湖）毛利率
+    随商品价格波动，σ 天然大，三条规则对它们结构性地判弱——垄断与否是事实层
+    问题，见 data["resource_moat"]（annotations/moat_annotations.yaml 标注），
+    本函数只度量盈利结构。兼容：data["moat"] 键保留，指向同一结果。
     """
     if _is_financial(data):
         return {"level": "不适用", "evidence": [], "reasons": ["金融股口径不适用"], "not_applicable": True}
@@ -1206,7 +1325,7 @@ def _moat(data: dict[str, Any]) -> dict[str, Any]:
 
     evidence = [ev1, ev2, ev3]
     met = sum(1 for e in evidence if e["ok"])
-    level = "宽护城河" if met == 3 else ("窄护城河" if met == 2 else "无明显护城河")
+    level = "强" if met == 3 else ("中" if met == 2 else "弱")
     reasons = [f"{'✅' if e['ok'] else '❌'} {e['name']}：{e['detail']}" for e in evidence]
     return {"level": level, "evidence": evidence, "reasons": reasons, "met": met,
             "total": len(evidence)}
@@ -1288,7 +1407,10 @@ def compute_scores(data: dict[str, Any]) -> dict[str, Any]:
                       "本工具不输出 Q/V 结论；请看第二节的风险检查原文",
         }
     data["quality"] = q
-    data["moat"] = _moat(data)
+    data["profit_structure"] = _profit_structure(data)
+    data["moat"] = data["profit_structure"]   # 兼容键：2.13.0 前叫「护城河」，历史 JSON 可读
+    data["resource_moat"] = load_resource_moat(data.get("meta", {}).get("code") or "")
+    data["solvency"] = _solvency(data)
     data["valuation_score"] = v
     data["risks"] = risks
     data["data_quality"] = data_quality

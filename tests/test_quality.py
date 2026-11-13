@@ -440,3 +440,99 @@ class ComputeScoresRobustnessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ===== 2.13.0 盈利结构 / 存续安全 / 垄断性标注 =====
+
+from screen.score import _profit_structure, _solvency, load_resource_moat
+
+
+class ProfitStructureRenameTest(unittest.TestCase):
+    """2.13.0：_moat → _profit_structure，标签宽/窄/无明显 → 强/中/弱。"""
+
+    def test_level_labels(self):
+        rows = support.annual_rows(5, roic=30.0, fcf_margin=0.15, gross_margin=40.0)
+        self.assertEqual(_profit_structure(support.with_annual(rows))["level"], "强")
+        rows = support.annual_rows(5, roic=12.0, fcf_margin=0.02, gross_margin=10.0)
+        self.assertEqual(_profit_structure(support.with_annual(rows))["level"], "弱")
+
+    def test_legacy_moat_key_still_works(self):
+        data = support.scored_data()
+        self.assertIs(data["moat"], data["profit_structure"])
+
+    def test_financial_stock_not_applicable(self):
+        rows = support.annual_rows(5)
+        data = support.with_annual(rows)
+        data["meta"] = {"industry": "银行"}
+        self.assertEqual(_profit_structure(data)["level"], "不适用")
+
+
+class SolvencyTest(unittest.TestCase):
+    """存续安全四档：坚固 / 稳健 / 承压 / 危险；危险来自 _fatal() 命中。"""
+
+    def _data(self, **kw):
+        rows = support.annual_rows(5, **kw)
+        return support.with_annual(rows)
+
+    def test_strong_company_is_solid(self):
+        data = self._data(roic=30.0, fcf_margin=0.15, fcf=12e8, debt=0.0, equity=80e8,
+                          ocf=14e8, net_profit=12e8, gross_margin=40.0)
+        data["risks"] = {"checks": []}
+        sol = _solvency(data)
+        self.assertEqual(sol["level"], "坚固")
+        self.assertEqual(sol["fatal"], [])
+
+    def test_high_debt_is_stable_not_solid(self):
+        data = self._data(fcf_margin=0.10, fcf=10e8, debt=40e8, equity=80e8,     # 0.5
+                          ocf=14e8, net_profit=12e8)
+        data["risks"] = {"checks": []}
+        self.assertEqual(_solvency(data)["level"], "稳健")
+
+    def test_negative_fcf_years_pressures(self):
+        data = self._data(fcf_margin=[-0.05, -0.05, -0.05, 0.10, 0.10],
+                          fcf=[-5e8, -5e8, -5e8, 10e8, 10e8],
+                          debt=0.0, equity=80e8, ocf=14e8, net_profit=12e8)
+        data["risks"] = {"checks": []}
+        self.assertEqual(_solvency(data)["level"], "承压")
+
+    def test_fatal_hit_means_danger(self):
+        data = self._data(debt=0.0, cash=20e8, equity=-10e8)     # 净资产为负
+        data["risks"] = {"checks": []}
+        sol = _solvency(data)
+        self.assertEqual(sol["level"], "危险")
+        self.assertIn("净资产为负", sol["fatal"])
+
+    def test_financial_stock_not_applicable(self):
+        data = self._data()
+        data["meta"] = {"industry": "银行"}
+        data["risks"] = {"checks": []}
+        self.assertTrue(_solvency(data)["not_applicable"])
+
+
+class ResourceMoatAnnotationTest(unittest.TestCase):
+    """垄断性标注：只读人工表，无标注就是无标注，过期显示待复核。"""
+
+    def test_unknown_code_is_not_annotated(self):
+        rm = load_resource_moat("999999")
+        self.assertFalse(rm["annotated"])
+        self.assertEqual(rm["moat_type"], "无标注")
+
+    def test_empty_code_is_not_annotated(self):
+        self.assertFalse(load_resource_moat("")["annotated"])
+
+    def test_annotated_code_from_yaml(self):
+        rm = load_resource_moat("601958")
+        self.assertTrue(rm["annotated"])
+        self.assertEqual(rm["moat_type"], "独家资源")
+        self.assertIn("金堆城", rm["evidence"])
+        self.assertTrue(rm["sources"])
+        self.assertFalse(rm["stale"])
+
+    def test_missing_yaml_file_falls_back_to_unannotated(self):
+        import screen.score as sc
+        orig = sc._ANNOTATIONS_FILE
+        sc._ANNOTATIONS_FILE = orig.with_name("不存在的文件.yaml")
+        try:
+            self.assertFalse(load_resource_moat("601958")["annotated"])
+        finally:
+            sc._ANNOTATIONS_FILE = orig

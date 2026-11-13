@@ -468,7 +468,7 @@ def _section_business(data: dict[str, Any]) -> str:
 """
     else:
         product_table = '<p class="small">产品/业务分部：暂无披露。</p>'
-    moat = data.get("moat") or {}
+    moat = data.get("profit_structure") or data.get("moat") or {}
     evidence = moat.get("evidence") or []
     if evidence:
         reasons = "".join(
@@ -478,6 +478,37 @@ def _section_business(data: dict[str, Any]) -> str:
     else:
         reasons = "".join(f"<li>{esc(x)}</li>" for x in moat.get("reasons") or [])
         moat_note = "三条证据口径不适用" if moat.get("not_applicable") else "年报不足 3 年"
+    # 2.13.0 生意属性三段：垄断性标注（人工维护，宁缺勿错）→ 存续安全 → 盈利结构
+    rm = data.get("resource_moat") or {}
+    sol = data.get("solvency") or {}
+    if rm.get("annotated"):
+        src_links = "".join(
+            f' <a href="{esc(s)}" target="_blank" rel="noopener">来源{idx + 1}</a>'
+            for idx, s in enumerate(rm.get("sources") or []))
+        stale_badge = ' <span class="badge warn">待复核</span>' if rm.get("stale") else ""
+        moat_lines = (f'<div class="kv">'
+                      f'<div class="k">垄断性标注</div><div><b>{esc(rm.get("moat_type"))}</b>{stale_badge}</div>'
+                      f'<div class="k">依据</div><div>{esc(rm.get("evidence") or "—")}</div>'
+                      f'<div class="k">控股股东</div><div>{esc(rm.get("controller") or "—")}</div>'
+                      f'<div class="k">来源</div><div>{src_links or "—"}（核实 {esc(rm.get("verified") or "—")}）</div>'
+                      f'</div>')
+    else:
+        moat_lines = ('<p class="small">垄断性标注：无标注。本工具不从财务数据反推垄断性；'
+                      '如需标注请在 annotations/moat_annotations.yaml 补录（须带可核实来源）。</p>')
+    if sol.get("level") and sol.get("level") != "数据不足":
+        if sol.get("not_applicable"):
+            sol_note = "金融股口径不适用"
+        elif sol.get("fatal"):
+            sol_note = "；".join(sol["fatal"])
+        else:
+            sol_note = "；".join(sol.get("reasons") or [])
+        sol_html = (f'<div class="kv"><div class="k">存续安全</div>'
+                    f'<div><b>{esc(sol["level"])}</b>'
+                    + (f'（{esc(sol_note)}）' if sol_note else '')
+                    + '</div></div>')
+    else:
+        sol_html = ('<div class="kv"><div class="k">存续安全</div>'
+                    '<div>数据不足（年报不足 3 年）</div></div>')
     checks = (data.get("risks") or {}).get("checks") or []
     improve = next((c for c in checks if c.get("key") == "margin_improve"), None)
     structure_line = _structure_line(structure, financial)
@@ -491,12 +522,16 @@ def _section_business(data: dict[str, Any]) -> str:
     <div class="k">最新报告期</div><div>{esc(meta.get('latest_date') or '—')}</div>
   </div>
   {product_table}
-  <h3>护城河规则结论</h3>
+  {moat_lines}
+  {sol_html}
+  <h3>盈利结构（三条证据）</h3>
   <div class="grid">
-    <div class="metric"><div class="k">规则判定</div><div class="v">{esc(moat.get('level') or '数据不足')}</div>
+    <div class="metric"><div class="k">结构判定</div><div class="v">{esc(moat.get('level') or '数据不足')}</div>
       <div class="note">{esc(moat_note)}</div></div>
   </div>
   <ul>{reasons or '<li>数据不足，暂不判断。</li>'}</ul>
+  <p class="small">盈利结构弱 ≠ 没有垄断。资源/牌照型公司的毛利率随商品价格波动，σ 天然大；
+  判断垄断性请看上方「垄断性标注」及其来源。本项只度量盈利稳定性，不参与 Q/V。</p>
   <h3>五年经营轨迹</h3>
   <table>
     <thead><tr><th>年度</th><th>营收（亿）</th><th>归母净利（亿）</th><th>ROE</th><th>ROIC</th><th>FCF（亿）</th><th>FCF/营收</th><th>毛利率</th><th>有息负债（亿）</th><th>在建工程/固资</th></tr></thead>
@@ -504,7 +539,7 @@ def _section_business(data: dict[str, Any]) -> str:
   </table>
   {structure_line}
   {margin_chart}
-  <p class="small">只写主营、行业、五年量化轨迹和护城河规则结论；不含上下游、政策、管理层评价。</p>
+  <p class="small">只写主营、行业、垄断性标注、存续安全、盈利结构与五年量化轨迹；不含上下游、政策、管理层评价。</p>
 </section>"""
 
 
