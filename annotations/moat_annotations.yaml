@@ -1,93 +1,850 @@
 # moat_annotations.yaml —— 垄断性人工标注表（2.13.0 新增）
 #
 # 约定（见《护城河与垄断性判定改造建议-20261113.md》§3.2）：
-# - 键 = 6 位股票代码（小写，不带交易所前缀）；
+# - 键 = 带交易所前缀代码（sh601958 / sz000629），兼容 6 位纯数字查询；
 # - moat_type 枚举：独家资源 / 配额牌照 / 特许经营 / 独家品种 / 技术壁垒 / 网络 / 无标注
 # - 每条必须带 sources（可点击的核实来源）和 verified（核实日期 YYYY-MM-DD）；
 # - verified 超过 12 个月，报告里自动显示「待复核」，不删除旧标注；
 # - 无标注的公司 = 工具显示「无标注」，绝不从财务数据反推垄断性。
 # - 本表只标注事实，不打分；垄断 ≠ 赚钱（见中盐化工案例），不进 Q/V。
+#
+# 2026-11-13：自选股池 113 只由搜索核实批量起草（agent 逐只搜索，来源均为真实 URL），
+# 其中「无标注」49 只多为充分竞争的大宗化工/制造/消费企业。
 
-sh601958:
+sh600063:
+  moat_type: 技术壁垒
+  evidence: PVA全球龙头，31万吨产能居全球首位，'电石—PVA—光学薄膜—PVB'全产业链一体化
+  controller: 皖维集团（实控人安徽省国资委）
+  sources:
+  - http://stock.finance.sina.com.cn/stock/go.php/vReport_Show/kind/lastest/rptid/820418460289/index.phtml
+  verified: 2026-11-13
+sh600075:
+  moat_type: 无标注
+  evidence: PVC及煤化工企业，充分竞争
+  controller: 新疆天业集团（实控人新疆生产建设兵团第八师国资委）
+  sources:
+  - https://wap.stockstar.com/detail/IG2025081500040990
+  verified: 2026-11-13
+sh600096:
   moat_type: 独家资源
-  evidence: 金堆城钼矿钼原矿石资源量 42,448.78 万吨、东沟钼矿 46,419.10 万吨，权益储量占全国 25% 以上，居国内首位
-  controller: 金堆城钼业集团 → 陕西有色金属控股集团（陕西省人民政府）
+  evidence: 磷矿采选一体化龙头，磷矿储量近8亿吨、采选产能1450万吨/年，为国内最大、全球前三的磷矿石生产企业
+  controller: 云天化集团（实控人云南省国资委）
   sources:
-    - https://static.sse.com.cn/bond/bridge2/disclosure/announcement/c/202603/c853fa_20260319_W94D.pdf
+  - http://www.p5w.net/stock/lzft/gsyj/201012/P020101210500233860040.pdf
+  - https://www.sgpjbg.com.cn/labelsyh/yuntianhuagongsiyanjiu/1/7039511.html
   verified: 2026-11-13
-
-sh600497:
-  moat_type: 独家资源
-  evidence: 中铝集团旗下铅锌锗全产业链龙头，锗资源储量全球前列，中国铜业多金属协同
-  controller: 中国铝集团（国务院国资委）
-  sources:
-    - https://finance.sina.com.cn/roll/2026-06-16/doc-inicqxfn9494940.shtml
-  verified: 2026-11-13
-
-sh601168:
-  moat_type: 独家资源
-  evidence: 玉龙铜矿持股 58%（2025 年矿产铜 15.2 万吨）、获各琦铜矿 100%，青海省属企业营收占比 75%
-  controller: 青海省人民政府国资委
-  sources:
-    - https://sns.sseinfo.com/resources/images/upload/202608/202608111443033227534627.pdf
-    - http://stock.finance.sina.com.cn/stock/go.php/vReport_Show/kind/company/rptid/838991132038/index.phtml
-  verified: 2026-11-13
-
-sz002096:
-  moat_type: 特许经营
-  evidence: 民爆生产许可，工业炸药管理产能 62.95 万吨/年、电子雷管 7550 万发/年，行业产能领先；民爆为许可制行业
-  controller: 中国能建（国务院国资委）
-  sources:
-    - http://www.expl.ceec.net.cn/col/col12192/index.html
-  verified: 2026-11-13
-
 sh600111:
   moat_type: 配额牌照
   evidence: 控股股东包钢集团拥有白云鄂博矿独家开采权，向公司供应稀土精矿；稀土开采/冶炼分离指标向公司集中配给
   controller: 包钢集团（内蒙古自治区国资）
   sources:
-    - https://data.eastmoney.com/report/info/AP202502211643358824.html
+  - https://data.eastmoney.com/report/info/AP202502211643358824.html
   verified: 2026-11-13
-
-sz000831:
+sh600195:
   moat_type: 配额牌照
-  evidence: 中国稀土集团旗下唯一上市平台，承载中重稀土资产整合；稀土配额制行业
-  controller: 中国稀土集团（国务院国资委）
+  evidence: 重大动物疫病疫苗（高致病性禽流感、口蹄疫）定点生产企业，牌照准入；口蹄疫疫苗与金宇、天康三足鼎立（合计市占率超70%）
+  controller: 中国农发集团（实控人国务院国资委）
   sources:
-    - https://businesstimescn.com/articles/632127.html
-    - https://finance.sina.cn/2025-05-14/detail-inewprws9194960.d.html
+  - http://vip.stock.finance.sina.com.cn/q/go.php/vReport_Show/kind/lastest/rptid/815879557799/index.phtml
+  - https://m-harmony.qcc.com/firm/dbe288f652497d6d67a0251a96ce6f91.html
   verified: 2026-11-13
-
-sz000792:
+sh600206:
+  moat_type: 无标注
+  evidence: 半导体靶材、稀土功能材料等新材料企业（靶材业务国内领先），但各细分行业竞争充分
+  controller: 中国有研科技集团（实控人国务院国资委）
+  sources:
+  - http://yuanchuang.10jqka.com.cn/20241212/c664431914.shtml
+  verified: 2026-11-13
+sh600211:
+  moat_type: 独家品种
+  evidence: 核心产品新活素（冻干重组人脑利钠肽）为国内心衰治疗领域生物一类新药、公司独家品种，长期独家销售
+  controller: 西藏康哲及一致行动人（实控人林刚/康哲药业，民营）
+  sources:
+  - https://finance.ifeng.com/c/8shK7LhKE2k
+  - https://vip.stock.finance.sina.com.cn/corp/view/vCB_AllBulletinDetail.php?id=11992300
+  verified: 2026-11-13
+sh600230:
+  moat_type: 无标注
+  evidence: TDI（甲苯二异氰酸酯）生产商，TDI产能约占国内10%，行业寡头但非独家垄断
+  controller: 沧州大化集团（实控人中国中化/国务院国资委）
+  sources:
+  - https://api3.cls.cn/share/article/2157488
+  verified: 2026-11-13
+sh600301:
   moat_type: 独家资源
-  evidence: 察尔汗盐湖钾锂资源，国内钾肥绝对龙头；实控人已由青海省政府国资委变更为中国五矿
-  controller: 中国五矿（国务院国资委）
+  evidence: 广西锡锑铟多金属矿企，铜坑矿、高峰锡矿等保有矿石资源量8959万吨、锡锑铟锌等金属量449万吨，资源禀赋稀缺
+  controller: 华锡集团（实控人2026年拟由广西国资委变更为中国五矿）
   sources:
-    - https://m.cnstock.com/commonDetail/661714
-    - https://finance.sina.com.cn/roll/2026-03-31/doc-inhsvwqa9060629.shtml
+  - https://www.cnstock.com/commonDetail/487149
+  - https://stcn.com/article/detail/4199723.html
   verified: 2026-11-13
-
+sh600315:
+  moat_type: 无标注
+  evidence: 日化（护肤、个护）企业，充分竞争的消费行业
+  controller: 平安人寿通过家化集团控制约48%（实控人中国平安，民营背景）
+  sources:
+  - http://static.sse.com.cn/disclosure/listedinfo/announcement/c/2020-11-25/600315_20201125_4.pdf
+  verified: 2026-11-13
 sh600328:
   moat_type: 独家资源
   evidence: 金属钠产能 6.5 万吨世界最大，占全球产能 30% 以上；另有 1 万吨扩建在建
   controller: 中盐集团（国务院国资委）
   sources:
-    - https://ir.p5w.net/question/000196B00C0C9F7C4CB3AA079BE67D9403E9.shtml
-    - https://www.163.com/dy/article/KI4KFNEM053469RG.html
+  - https://ir.p5w.net/question/000196B00C0C9F7C4CB3AA079BE67D9403E9.shtml
+  - https://www.163.com/dy/article/KI4KFNEM053469RG.html
   verified: 2026-11-13
-
+sh600367:
+  moat_type: 独家资源
+  evidence: 拥有国内顶级重晶石矿（钡）与天青石矿（锶）资源，钡盐、锶盐产能全国第一，碳酸钡/碳酸锶市占率约40%/30%
+  controller: 青岛红星化工集团（实控人青岛市国资委）
+  sources:
+  - https://www.sohu.com/a/1100135423_122014422
+  - http://m.eeo.com.cn/2026/0515/877079.shtml
+  verified: 2026-11-13
+sh600392:
+  moat_type: 配额牌照
+  evidence: 稀土冶炼分离实行国家总量配额管理，公司为国内拥有稀土冶炼分离配额的主要企业之一（独居石及综合利用路线稀缺）
+  controller: 中国地质科学院矿产综合利用研究所（实控人财政部）
+  sources:
+  - https://finance.eastmoney.com/a/202609203879416865.html
+  verified: 2026-11-13
+sh600409:
+  moat_type: 无标注
+  evidence: 纯碱、粘胶短纤等大宗化工品企业，充分竞争
+  controller: 唐山三友碱业集团（实控人唐山市国资委）
+  sources:
+  - https://s.askci.com/stock/summary/600409/
+  verified: 2026-11-13
+sh600416:
+  moat_type: 无标注
+  evidence: 舰船电力推进等军工电机配套企业，依赖军工订单资质，但非牌照垄断或独家资源
+  controller: 湘电集团（实控人湖南省国资委）
+  sources:
+  - http://finance.ce.cn/stock/gsgdbd/202411/26/t20241126_39215609.shtml
+  verified: 2026-11-13
+sh600456:
+  moat_type: 技术壁垒
+  evidence: 国内钛材龙头：中国市场占有率40%以上、军工钛材市占率80%以上，国内唯一具备宇航级钛合金全流程自主可控能力企业
+  controller: 宝钛集团（实控人陕西有色金属控股集团/陕西省国资委）
+  sources:
+  - https://www.sgpjbg.com/labelsyh/baotaigufenxingyediwei/1/7374350.html
+  - https://cmcc.china-mcc.com/news_show-102-11068.html
+  verified: 2026-11-13
+sh600459:
+  moat_type: 技术壁垒
+  evidence: 国内贵金属（铂族）新材料龙头，源自昆明贵金属研究所，贵金属催化材料、特种功能材料为国内核心供应商
+  controller: 云南省贵金属新材料控股集团（实控人云南省国资委）
+  sources:
+  - https://m.10jqka.com.cn/sn/20251103/54762399.shtml
+  verified: 2026-11-13
+sh600497:
+  moat_type: 独家资源
+  evidence: 中铝集团旗下铅锌锗全产业链龙头，锗资源储量全球前列，中国铜业多金属协同
+  controller: 中国铝集团（国务院国资委）
+  sources:
+  - https://finance.sina.com.cn/roll/2026-06-16/doc-inicqxfn9494940.shtml
+  verified: 2026-11-13
+sh600535:
+  moat_type: 独家品种
+  evidence: 复方丹参滴丸为公司独家品种，纳入国家基药目录，单品种产销规模多年居中药行业前列
+  controller: 华润三九（实控人中国华润/国务院国资委）
+  sources:
+  - https://www.stcn.com/article/detail/1655519.html
+  - http://static.cninfo.com.cn/finalpage/2018-10-27/1205547348.PDF
+  verified: 2026-11-13
+sh600549:
+  moat_type: 独家资源
+  evidence: 钨全产业链龙头，福建省属平台掌控钨资源；钨粉末、细钨丝等份额行业前列，钨资源属国家战略稀缺矿种
+  controller: 福建省稀有稀土集团（实控人福建省国资委）
+  sources:
+  - https://data.eastmoney.com/report/info/AP202606031823194346.html
+  - http://app.cnstock.com/zzb/zgzqb/html/2025-06/28/nw.D110000zgzqb_20250628_2-B065.htm
+  verified: 2026-11-13
+sh600558:
+  moat_type: 无标注
+  evidence: 焊条、焊丝等焊接材料企业（行业产销规模较大），但焊材行业充分竞争
+  controller: 四川大西洋集团（实控人自贡市国资委）
+  sources:
+  - https://wap.stockstar.com/detail/IG2025032800020483
+  verified: 2026-11-13
+sh600618:
+  moat_type: 无标注
+  evidence: 烧碱、氯化石蜡等氯碱化工企业，充分竞争
+  controller: 上海华谊控股集团（实控人上海市国资委）
+  sources:
+  - https://robo.datayes.com/v2/stock/600618/overview
+  verified: 2026-11-13
+sh600714:
+  moat_type: 无标注
+  evidence: 青海煤炭及锶盐开采企业，资源规模有限
+  controller: 青海省投资集团（2026年实控人变更为国家电投/国务院国资委）
+  sources:
+  - http://stock.10jqka.com.cn/20260318/c675373804.shtml
+  - https://futures.etnet.com.hk/www/sc/ashares/quote_ci_brief.php?code=600714
+  verified: 2026-11-13
+sh600737:
+  moat_type: 配额牌照
+  evidence: 中粮集团食糖业务平台，国内最大食糖进口商（中粮系食糖进口量占全国50%以上），同时拥有食糖进口配额内、配额外资质
+  controller: 中粮集团（持股50.73%，实控人国务院国资委）
+  sources:
+  - https://www.9fzt.com/9fztgw_1_middle_A/e89a3db826baf14643fac49ddf8acbc5.html
+  - http://static.cninfo.com.cn/finalpage/2012-12-22/61937959.PDF
+  verified: 2026-11-13
+sh600866:
+  moat_type: 无标注
+  evidence: 生物发酵（氨基酸、核苷酸）企业，赖氨酸/苏氨酸/I+G产能全球前列但行业充分竞争
+  controller: 广东省广新控股集团（实控人广东省国资委）
+  sources:
+  - https://m.hx168.com.cn/stock/F10/600866.html
+  verified: 2026-11-13
+sh600876:
+  moat_type: 无标注
+  evidence: 信息显示玻璃与新能源材料（光伏玻璃）企业，中国建材旗下但行业充分竞争
+  controller: 凯盛科技集团（实控人中国建材集团/国务院国资委）
+  sources:
+  - https://www.9fzt.com/detail/sh_600876_9_92abe3066dd1450ec1cc3793451e96ca.html
+  verified: 2026-11-13
+sh600929:
+  moat_type: 配额牌照
+  evidence: 湖南盐业集团旗下盐业平台，食盐实行定点生产/批发许可专营制度（盐业专营），省属盐业牌照稀缺
+  controller: 湖南盐业集团（实控人湖南省国资委）
+  sources:
+  - https://static.sse.com.cn/disclosure/listedinfo/announcement/c/new/2025-09-05/600929_20250905_OXXS.pdf
+  - https://www.hnsalt.com.cn/news_detail/831.html
+  verified: 2026-11-13
+sh600961:
+  moat_type: 独家资源
+  evidence: 全球原生铟绝对龙头：铟产能60吨/年（实际产量更高），占全球原生铟产量约60%，锌冶炼副产铟资源独家性强
+  controller: 湖南有色（实控人中国五矿/国务院国资委）
+  sources:
+  - https://www.jiuyangongshe.com/a/2z3xy5eljhh
+  - http://app.myzaker.com/news/article.php?pk=6a7bdebdb15ec055f7680b9f
+  verified: 2026-11-13
+sh600963:
+  moat_type: 无标注
+  evidence: 纸及纸浆生产企业，自有林地但行业充分竞争
+  controller: 泰格林纸集团（实控人中国诚通集团/国务院国资委）
+  sources:
+  - https://paper.cnstock.com/html/2025-03/12/content_2035488.htm
+  verified: 2026-11-13
 sh600976:
   moat_type: 独家品种
   evidence: 体外培育牛黄为国家保密配方级独家品种，天然牛黄稀缺替代方案
   controller: 无国资背景（民营）
   sources: []
   verified: 2026-11-13
-
+sh600995:
+  moat_type: 特许经营
+  evidence: 南方电网旗下唯一抽水蓄能上市平台，2025年抽蓄装机占全国19.23%（与国网合计CR2约87%），输配电储能资产具区域排他性
+  controller: 中国南方电网（持股65.30%，实控人国务院国资委）
+  sources:
+  - https://www.sgpjbg.com/labelsyh/nawangchunengxingyediwei/1/7717538.html
+  verified: 2026-11-13
+sh601069:
+  moat_type: 无标注
+  evidence: 新疆黄金及锰矿开采企业，区域资源型但行业充分竞争
+  controller: 新疆有色集团（实控人新疆国资委）
+  sources:
+  - https://4g.stockstar.com/detail/AN2026093000034581
+  verified: 2026-11-13
+sh601118:
+  moat_type: 独家资源
+  evidence: 中国最大天然橡胶生产企业、全球最大天胶企业之一，经营胶园土地380万亩、2025年加工量超131万吨，承担国家天然橡胶战略储备职能
+  controller: 海垦控股集团（实控人海南省国资委）
+  sources:
+  - https://www.9fzt.com/detail/sh_601118_10_843578520105.html
+  - http://dataclouds.cninfo.com.cn/shgonggao/2022/2022-11-17/565b99c865a111eda96afa163e26e5de.pdf
+  verified: 2026-11-13
+sh601121:
+  moat_type: 独家资源
+  evidence: 新疆铁矿龙头，累计保有铁矿石资源量7.37亿吨、核准开采规模2190万吨/年，区域铁矿石资源禀赋突出
+  controller: 新疆有色集团（实控人新疆国资委）
+  sources:
+  - http://static.sse.com.cn/disclosure/listedinfo/announcement/c/new/2026-08-01/601121_20260801_22S6.pdf
+  - https://www.cnfin.com/announ/detail/index.html?id=841505804907&code=601121&dannoun=lcdetail&announ=lc
+  verified: 2026-11-13
+sh601168:
+  moat_type: 独家资源
+  evidence: 玉龙铜矿持股 58%（2025 年矿产铜 15.2 万吨）、获各琦铜矿 100%，青海省属企业营收占比 75%
+  controller: 青海省人民政府国资委
+  sources:
+  - https://sns.sseinfo.com/resources/images/upload/202608/202608111443033227534627.pdf
+  - http://stock.finance.sina.com.cn/stock/go.php/vReport_Show/kind/company/rptid/838991132038/index.phtml
+  verified: 2026-11-13
+sh601798:
+  moat_type: 无标注
+  evidence: 石化热交换器等特种装备企业（全国锅炉压力容器热交换器标技委主任委员单位），行业地位较高但非垄断
+  controller: 苏美达股份（实控人国机集团/国务院国资委）
+  sources:
+  - https://www.cnfin.com/announ/detail/index.html?id=840036849166&code=601798&dannoun=lcdetail&announ=lc
+  verified: 2026-11-13
+sh601958:
+  moat_type: 独家资源
+  evidence: 金堆城钼矿钼原矿石资源量 42,448.78 万吨、东沟钼矿 46,419.10 万吨，权益储量占全国 25% 以上，居国内首位
+  controller: 金堆城钼业集团 → 陕西有色金属控股集团（陕西省人民政府）
+  sources:
+  - https://static.sse.com.cn/bond/bridge2/disclosure/announcement/c/202603/c853fa_20260319_W94D.pdf
+  verified: 2026-11-13
+sh603032:
+  moat_type: 无标注
+  evidence: 精密制造与客运业务企业，无垄断属性
+  controller: 德力西新疆投资集团（实控人胡成中，民营）
+  sources:
+  - https://f10.10jqka.com.cn/603032/company/
+  verified: 2026-11-13
+sh603213:
+  moat_type: 无标注
+  evidence: 氯碱化工（烧碱、PVC、MIBK）企业，充分竞争（正被浙江沪杭甬换股吸收合并）
+  controller: 浙江省交通投资集团（实控人浙江省国资委）
+  sources:
+  - http://static.sse.com.cn/disclosure/listedinfo/announcement/c/new/2026-01-31/603213_20260131_NRKN.pdf
+  verified: 2026-11-13
+sh603218:
+  moat_type: 无标注
+  evidence: 风电铸件龙头（国内市占率约35%、全球约25%），但铸造环节充分竞争，无牌照或资源壁垒
+  controller: 傅明康、傅凌儿、陈建敏家族（民营）
+  sources:
+  - https://www.163.com/dy/article/L5KJ3R1M05568W0A.html
+  verified: 2026-11-13
+sh603227:
+  moat_type: 配额牌照
+  evidence: 新疆民爆龙头，民爆行业许可制专营，新疆区域市占率高
+  controller: 新疆农牧投（实控人新疆国资委）
+  sources:
+  - http://static.cninfo.com.cn/finalpage/2024-07-03/1220521395.PDF
+  verified: 2026-11-13
+sh603281:
+  moat_type: 技术壁垒
+  evidence: 功能性硅烷（硅烷偶联剂）全球市占率近20%，2025年上半年稳居全球前三、国内第一，全产业链一体化
+  controller: 甘书官、甘俊父子（民营）
+  sources:
+  - https://m.cnstock.com/commonDetail/628936
+  - https://www.9fzt.com/9fztgw_1_top/4c9d1301527dba2f02ee432b34a644e5.html
+  verified: 2026-11-13
+sh603456:
+  moat_type: 无标注
+  evidence: 国内准一线CDMO企业（小分子CDMO国内前五），行业充分竞争，无垄断属性
+  controller: 浙江中贝九洲集团（实控人花轩德、花莉蓉、花晓慧，民营）
+  sources:
+  - https://f10.10jqka.com.cn/603456/company/#detail
+  verified: 2026-11-13
+sh603698:
+  moat_type: 技术壁垒
+  evidence: 国内唯一拥有自主知识产权'航天炉'粉煤气化技术的工程公司（首台国产粉煤加压气化炉诞生地），技术壁垒高
+  controller: 中国运载火箭技术研究院（实控人中国航天科技集团/国务院国资委）
+  sources:
+  - https://paper.cnstock.com/html/2025-01/22/content_2021562.htm
+  verified: 2026-11-13
+sh603977:
+  moat_type: 配额牌照
+  evidence: 江西省唯一民爆生产企业，民爆行业属许可制专营（生产/销售许可证+民爆物品管制），区域专营属性强
+  controller: 江西省军工控股集团（实控人江西省国资委）
+  sources:
+  - http://www.sse.com.cn/disclosure/listedinfo/announcement/c/new/2025-04-18/603977_20250418_6VGH.pdf
+  - https://www.9fzt.com/detail/sh_603977_10_785500982399.html
+  verified: 2026-11-13
+sh605006:
+  moat_type: 无标注
+  evidence: 玻璃纤维企业（41万吨/年产能、国内第四），但与行业龙头充分竞争
+  controller: 山东能源集团新材料（实控人山东省国资委）
+  sources:
+  - http://vip.stock.finance.sina.com.cn/corp/view/vCB_AllBulletinDetail.php?stockid=605006&id=10288147
+  verified: 2026-11-13
+sh688122:
+  moat_type: 技术壁垒
+  evidence: 国内唯一实现超导线材商业化生产的企业，高端钛合金棒丝材主要供应商（多牌号为新型军机唯一供应商）
+  controller: 西北有色金属研究院（实控人陕西省财政厅）
+  sources:
+  - http://stock.finance.sina.com.cn/stock/go.php/vReport_Show/kind/search/rptid/796905931172/index.phtml
+  - https://stock.stockstar.com/IG2025033100002837.shtml
+  verified: 2026-11-13
+sh688146:
+  moat_type: 技术壁垒
+  evidence: 国内电子特气龙头，三氟甲磺酸系列全球市占率约70%，拥有全球最大超高纯六氟化钨生产基地
+  controller: 派瑞科技（实控人中国船舶集团/国务院国资委）
+  sources:
+  - https://www.sfccn.com/2026/10-22/2MMDE0MDdfMjI3ODQ2MQ.html
+  - https://m.sohu.com/a/1070035286_122014422
+  verified: 2026-11-13
+sh688269:
+  moat_type: 无标注
+  evidence: 贵金属催化剂（医药化工领域）企业，国内领先但催化剂行业竞争充分
+  controller: 西北有色金属研究院（实控人陕西省财政厅）
+  sources:
+  - https://s.askci.com/stock/summary/688269/
+  verified: 2026-11-13
+sh688456:
+  moat_type: 技术壁垒
+  evidence: 铜基金属粉体材料国内市占率约30%（全球第二）、微电子锡基焊粉国内市占率15%以上（国内第一）
+  controller: 中国有研科技集团（实控人国务院国资委）
+  sources:
+  - https://www.cnfin.com/announ/detail/index.html?id=836673679815&code=688456&dannoun=stibdetail&announ=stib
+  - https://www.sgpjbg.com/labelsyh/youyanfencaixingyediwei/1/7175309.html
+  verified: 2026-11-13
+sh688563:
+  moat_type: 技术壁垒
+  evidence: 国内航材领域龙头，高温合金母合金市占率30.53%、橡胶密封件27.94%、钛合金铸件24.26%，航材院技术背景、航空发动机材料核心配套商
+  controller: 中国航发北京航空材料研究院（实控人中国航空发动机集团/国务院国资委）
+  sources:
+  - https://www.sgpjbg.com/labelsyh/hangcaigufenxingyediwei/1/7152664.html
+  - http://static.cninfo.com.cn/finalpage/2023-08-16/1217541468.PDF
+  verified: 2026-11-13
+sh688707:
+  moat_type: 无标注
+  evidence: 锂电正极材料（高镍多元）企业，行业充分竞争
+  controller: 中国振华电子集团（实控人中国电子信息产业集团/国务院国资委）
+  sources:
+  - https://roadshow.sseinfo.com/activityDetails/36875
+  verified: 2026-11-13
+sh688722:
+  moat_type: 技术壁垒
+  evidence: 超高分子量聚乙烯（UHMWPE）纤维产能7960吨/年，国内第二、全球第三，军工资质健全
+  controller: 国家开发投资集团（国投集团/国务院国资委）
+  sources:
+  - https://data.eastmoney.com/report/zw_stock.jshtml?infocode=AP202503201645145453
+  verified: 2026-11-13
+sh688778:
+  moat_type: 技术壁垒
+  evidence: 锂电正极材料钴酸锂龙头，2025年钴酸锂全球市占率51%连续第一
+  controller: 厦门钨业（实控人福建省国资委）
+  sources:
+  - https://9fzt.com/detail/sh_688778_10_828368551422.html
+  verified: 2026-11-13
+sh688779:
+  moat_type: 无标注
+  evidence: 锂电正极材料（多元正极，原长远锂科）企业，行业充分竞争
+  controller: 中国五矿股份（实控人中国五矿集团/国务院国资委）
+  sources:
+  - https://vipwt1.cfi.net.cn/p20260626001560.html
+  verified: 2026-11-13
+sz000422:
+  moat_type: 无标注
+  evidence: 尿素、磷酸二铵、PVC等大宗化肥化工企业，充分竞争
+  controller: 宜化集团（实控人宜昌市国资委）
+  sources:
+  - http://hbyh.cn/gongsijianjie.html
+  verified: 2026-11-13
+sz000519:
+  moat_type: 技术壁垒
+  evidence: 超硬材料龙头，工业金刚石和立方氮化硼产销量居全球第一（中南钻石），智能弹药为兵器工业集团稀缺标的
+  controller: 豫西工业集团（实控人中国兵器工业集团/国务院国资委）
+  sources:
+  - https://www.163.com/dy/article/JLD6QU1305198ETO.html
+  - https://quotedx.cfi.cn/gsda/119/000519.html
+  verified: 2026-11-13
 sz000629:
   moat_type: 独家资源
   evidence: 攀钢钒制品分公司为全球最大钒铁生产基地，钒渣-钒制品一体化
   controller: 鞍钢集团（国务院国资委）
   sources:
-    - http://mo.ansteel.cn/news/xinwenzixun/2023-12-15/26f93133218a512f0f0429a166b9aa0b.html
-    - https://www.pgvt.cn/Uploads/Download/2024-07-16/6696173fa4f16.pdf
+  - http://mo.ansteel.cn/news/xinwenzixun/2023-12-15/26f93133218a512f0f0429a166b9aa0b.html
+  - https://www.pgvt.cn/Uploads/Download/2024-07-16/6696173fa4f16.pdf
+  verified: 2026-11-13
+sz000655:
+  moat_type: 无标注
+  evidence: 山东铁矿采选企业（富铁矿品位高），但铁矿石行业充分竞争
+  controller: 山东金岭铁矿（表决权由山东钢铁集团受托行使，实控人山东省国资委）
+  sources:
+  - http://money.finance.sina.com.cn/corp/view/vCB_AllBulletinDetail.php?stockid=000655&id=11335349
+  verified: 2026-11-13
+sz000657:
+  moat_type: 技术壁垒
+  evidence: 硬质合金产量1.63万吨（占全国25.5%）居国内第一、全球第一，受托管理钨资源储量及钨冶炼产能居全球第一
+  controller: 中国五矿股份（实控人中国五矿集团/国务院国资委）
+  sources:
+  - https://data.eastmoney.com/report/info/AP202610061830166239.html
+  verified: 2026-11-13
+sz000707:
+  moat_type: 无标注
+  evidence: 联碱法纯碱及氯化铵生产企业，充分竞争
+  controller: 湖北双环化工集团（实控人湖北省国资委，经长江产业集团）
+  sources:
+  - http://static.cninfo.com.cn/finalpage/2024-09-20/1221245680.PDF
+  verified: 2026-11-13
+sz000758:
+  moat_type: 无标注
+  evidence: 国际工程承包与有色金属资源开发企业，充分竞争
+  controller: 中国有色矿业集团（实控人国务院国资委）
+  sources:
+  - https://s.askci.com/stock/summary/000758/
+  verified: 2026-11-13
+sz000762:
+  moat_type: 独家资源
+  evidence: 拥有西藏扎布耶盐湖（锂浓度全球第二、仅次智利阿塔卡玛）碳酸锂资源，万吨级碳酸锂项目央企旗下稀缺盐湖资源
+  controller: 西藏矿业资产经营公司（实控人中国宝武/国务院国资委）
+  sources:
+  - https://www.cnfin.com/news-list/index.html?tagname=%E6%89%8E%E5%B8%83%E8%80%B6
+  - https://www.163.com/dy/article/KAD89F7S05568W0A.html
+  verified: 2026-11-13
+sz000792:
+  moat_type: 独家资源
+  evidence: 察尔汗盐湖钾锂资源，国内钾肥绝对龙头；实控人已由青海省政府国资委变更为中国五矿
+  controller: 中国五矿（国务院国资委）
+  sources:
+  - https://m.cnstock.com/commonDetail/661714
+  - https://finance.sina.com.cn/roll/2026-03-31/doc-inhsvwqa9060629.shtml
+  verified: 2026-11-13
+sz000811:
+  moat_type: 无标注
+  evidence: 工业制冷压缩机及低温设备龙头，但设备行业充分竞争
+  controller: 烟台国丰投资控股（实控人烟台市国资委）
+  sources:
+  - https://www.chnfund.com/article/AR263f15aa-7a78-cbe8-f19c-3a211d36bb6c
+  verified: 2026-11-13
+sz000830:
+  moat_type: 无标注
+  evidence: 尿素、DMF等煤化工产品企业，充分竞争
+  controller: 中化投资（实控人中国中化/国务院国资委）
+  sources:
+  - https://finance.sina.com.cn/jjxw/2024-12-31/doc-inechwvx1793278.shtml
+  verified: 2026-11-13
+sz000831:
+  moat_type: 配额牌照
+  evidence: 中国稀土集团旗下唯一上市平台，承载中重稀土资产整合；稀土配额制行业
+  controller: 中国稀土集团（国务院国资委）
+  sources:
+  - https://businesstimescn.com/articles/632127.html
+  - https://finance.sina.cn/2025-05-14/detail-inewprws9194960.d.html
+  verified: 2026-11-13
+sz000833:
+  moat_type: 无标注
+  evidence: 制糖造纸企业，充分竞争
+  controller: 广东省环保集团（实控人广东省国资委）
+  sources:
+  - https://www.yuegui.cn/enter_index_us
+  verified: 2026-11-13
+sz000875:
+  moat_type: 无标注
+  evidence: 国家电投旗下新能源发电（风电/光伏装机1635.79万千瓦）运营商，电力行业受监管非垄断性支配
+  controller: 国家电投集团吉林能源投资（实控人国家电投/国务院国资委）
+  sources:
+  - https://www.cnfin.com/announ/detail/index.html?id=842989948098&code=000875&dannoun=lcdetail&announ=lc
+  verified: 2026-11-13
+sz000878:
+  moat_type: 无标注
+  evidence: 铜冶炼为主企业（保有铜资源约470万吨、普朗铜矿为主力），中铝旗下铜平台但行业充分竞争
+  controller: 云铜集团/中国铜业（实控人中铝集团/国务院国资委）
+  sources:
+  - https://stock.stockstar.com/notice/SN2025072100033925.shtml
+  - https://www.163.com/dy/article/KBE5K9G005568W0A.html
+  verified: 2026-11-13
+sz000893:
+  moat_type: 独家资源
+  evidence: 持有老挝甘蒙省35平方公里钾盐采矿权（钾镁盐矿总储量10.02亿吨），现有氯化钾产能200万吨/年、规划达500万吨/年，境外钾肥资源稀缺
+  controller: 无控股股东、无实际控制人（第一大股东中农集团体系）
+  sources:
+  - http://ashares.etnet.com.hk/www/sc/ashares/quote_ci_brief.php?code=000893
+  - https://stock.10jqka.com.cn/20250224/c666245009.shtml
+  verified: 2026-11-13
+sz000920:
+  moat_type: 技术壁垒
+  evidence: 反渗透膜国产龙头：国内膜材料市占率约15%、反渗透膜销量国内第一、全球第三，国务院国资委官网专题报道
+  controller: 中国中车集团（实控人国务院国资委）
+  sources:
+  - http://www.sasac.gov.cn/n4470048/n35313464/n35373956/n35373968/c35377331/content.html
+  verified: 2026-11-13
+sz000923:
+  moat_type: 独家资源
+  evidence: 核心资产为南非Palabora矿业（PMC），其蛭石矿为全球最大蛭石矿、河钢南非为全球最大蛭石供应商，同时为南非最大铜产品供应商
+  controller: 河钢集团（实控人河北省国资委）
+  sources:
+  - http://static.cninfo.com.cn/finalpage/2016-12-02/1202854885.PDF
+  - https://en.investgo.cn/article/yw/alfx/202506/789524.html
+  verified: 2026-11-13
+sz000928:
+  moat_type: 无标注
+  evidence: 钢铁工业工程总承包企业，充分竞争
+  controller: 中钢资本（实控人国务院国资委，宝武间接控制）
+  sources:
+  - https://finance.sina.cn/2025-10-13/detail-inftsmfa5687630.d.html?vt=4
+  verified: 2026-11-13
+sz000960:
+  moat_type: 独家资源
+  evidence: 全球锡龙头：锡、铟资源储量均居全球第一（锡储量62.62万吨），2024年锡产品国内市占率47.98%、全球25.03%
+  controller: 云南锡业集团（实控人云南省国资委）
+  sources:
+  - https://data.eastmoney.com/notices/detail/000960/AN202506191693857259.html
+  - https://s.askci.com/stock/summary/000960/
+  verified: 2026-11-13
+sz000962:
+  moat_type: 技术壁垒
+  evidence: 钽铌金属全球龙头：钽粉全球市占率约30%、钽丝全球市占率超60%，超导铌全球第一
+  controller: 中色（宁夏）东方集团（实控人中国有色矿业集团/国务院国资委）
+  sources:
+  - https://m.cnstock.com/commonDetail/770079
+  - http://www.otic.com.cn/?m=hr
+  verified: 2026-11-13
+sz000970:
+  moat_type: 技术壁垒
+  evidence: 世界第二、中国最大的钕铁硼永磁材料生产商，产能占全球市场份额15%以上，中科院背景N52最高性能钕铁硼
+  controller: 北京三环新材料高技术公司（实控人中国科学院控股有限公司）
+  sources:
+  - https://www.sohu.com/a/1088589397_122014422
+  - https://finance.sina.com.cn/stock/relnews/cn/2026-04-08/doc-inhtuupu2718163.shtml
+  verified: 2026-11-13
+sz002037:
+  moat_type: 配额牌照
+  evidence: 民爆器材生产与爆破服务企业，民爆行业实行许可证专营制度
+  controller: 保利久联控股集团（实控人中国保利集团/国务院国资委）
+  sources:
+  - https://www.poly-union.com/channels/161.html
+  verified: 2026-11-13
+sz002046:
+  moat_type: 无标注
+  evidence: 磨料磨具（超硬材料制品）与精密轴承企业，科研院所背景但行业充分竞争
+  controller: 中国机械工业集团（国机集团/国务院国资委）
+  sources:
+  - http://static.cninfo.com.cn/finalpage/2023-10-20/1218097045.PDF
+  verified: 2026-11-13
+sz002057:
+  moat_type: 无标注
+  evidence: 四氧化三锰等软磁材料国内领先、金属制品与检测业务，细分市占率高但未达垄断性支配地位
+  controller: 中钢资本控股（实控人国务院国资委，宝武间接控制）
+  sources:
+  - http://stock.finance.sina.com.cn/stock/go.php/vReport_Show/kind/lastest/rptid/743280718593/index.phtml
+  verified: 2026-11-13
+sz002092:
+  moat_type: 无标注
+  evidence: PVC、烧碱等氯碱化工企业，充分竞争
+  controller: 中泰集团（实控人新疆国资委）
+  sources:
+  - https://api3.cls.cn/share/article/2118259
+  verified: 2026-11-13
+sz002096:
+  moat_type: 特许经营
+  evidence: 民爆生产许可，工业炸药管理产能 62.95 万吨/年、电子雷管 7550 万发/年，行业产能领先；民爆为许可制行业
+  controller: 中国能建（国务院国资委）
+  sources:
+  - http://www.expl.ceec.net.cn/col/col12192/index.html
+  verified: 2026-11-13
+sz002149:
+  moat_type: 技术壁垒
+  evidence: 军工钛合金板带材核心供应商（导弹钛壳体市占率超60%、深海钛合金80-90%），核电银合金控制棒国内唯一、爆炸复合材料市占率第一
+  controller: 西北有色金属研究院（实控人陕西省财政厅）
+  sources:
+  - https://www.sgpjbg.com/labelsyh/xibucailiaoxingyediwei/1/7114769.html
+  verified: 2026-11-13
+sz002155:
+  moat_type: 独家资源
+  evidence: 全球锑矿开发龙头（2021年锑锭产量全球占比26.61%居全球第一）、国内十大产金企业，保有黄金储量137吨，锑资源战略属性突出
+  controller: 湖南黄金集团（实控人湖南省国资委）
+  sources:
+  - https://dxpress.gelonghui.com/news/5213475
+  - https://www.sohu.com/a/1100607822_122014422
+  verified: 2026-11-13
+sz002182:
+  moat_type: 技术壁垒
+  evidence: 全球镁行业龙头（原云海金属），镁合金及原镁产能规模全球领先，'白云石-原镁-镁合金-深加工'全产业链
+  controller: 中国宝武钢铁集团（实控人国务院国资委）
+  sources:
+  - https://m.sohu.com/a/1099603085_120988576
+  verified: 2026-11-13
+sz002226:
+  moat_type: 配额牌照
+  evidence: 兵器工业集团旗下民爆核心平台（国家民爆现代产业链'链长'核心单位），民爆生产销售许可专营
+  controller: 北方特能集团（实控人中国兵器工业集团/国务院国资委）
+  sources:
+  - http://www.163.com/dy/article/KG1V1QAM053469RG.html
+  verified: 2026-11-13
+sz002237:
+  moat_type: 无标注
+  evidence: 黄金冶炼及副产品（硫酸等）企业，与控股股东江西铜业存在同业竞争待解决，行业充分竞争
+  controller: 江西铜业（实控人江西省国资委）
+  sources:
+  - https://disc.static.szse.cn/disc/disk03/finalpage/2022-10-12/fc1ccbfb-418e-407c-a67a-0162996d78cd.PDF
+  verified: 2026-11-13
+sz002254:
+  moat_type: 技术壁垒
+  evidence: 国内氨纶、芳纶龙头，芳纶纸产品市占率居全球第二（仅次于杜邦），间位芳纶全球第二、对位全球第四
+  controller: 烟台国丰投资控股（实控人烟台市国资委）
+  sources:
+  - https://www.bse.cn/disclosure/2023/2023-02-08/1675855984_976112.pdf
+  - https://www.sgpjbg.com/labelsyh/taihexincaixingyediwei/1/7149069.html
+  verified: 2026-11-13
+sz002258:
+  moat_type: 技术壁垒
+  evidence: 草铵膦全球龙头，子公司利尔生物为全球首家精草铵膦商业化生产企业，2024年精草铵膦产销量世界第一、全球市占率62%
+  controller: 久远集团（实控人中国工程物理研究院；2026年拟转让至华润双鹤，尚待交割）
+  sources:
+  - https://www.163.com/dy/article/KTPQPNN505568W0A.html
+  - https://epaper.cs.com.cn/zgzqb/html/2026-07/30/nw.D110000zgzqb_20260730_2-B052.htm
+  verified: 2026-11-13
+sz002286:
+  moat_type: 无标注
+  evidence: 功能糖细分龙头（全球最大低聚异麦芽糖生产商），但功能糖为充分竞争产品，无独家资源或牌照壁垒
+  controller: 永裕投资（实控人戴斯觉，民营）
+  sources:
+  - https://www.9fzt.com/industryReport/article.html?id=804600691816
+  - https://www.sohu.com/a/955865611_115865
+  verified: 2026-11-13
+sz002312:
+  moat_type: 独家资源
+  evidence: 拥有磷矿资源储量1.3亿吨、磷矿产能410万吨/年，工业级磷酸一铵产销量全球第一（出口量占全国出口总量50%以上）
+  controller: 四川省先进材料产业投资集团（实控人四川省国资委）
+  sources:
+  - https://www.sgpjbg.com/labelsyh/chuanfalongmangxingyediwei/1/7550089.html
+  - https://m.hx168.com.cn/stock/F10/002312.html
+  verified: 2026-11-13
+sz002315:
+  moat_type: 网络
+  evidence: 旗下中国制造网为国内头部B2B外贸平台（注册买家2000万+，综合实力行业第二、仅次于阿里国际站），具平台网络效应
+  controller: 沈锦华（民营）
+  sources:
+  - https://data.eastmoney.com/report/zw_macresearch.jshtml?encodeUrl=QKZA6Mk14ejZJmos/gDwTqVeQUEJhhvQAlGOIQ2DVcQ=
+  - https://4g.stockstar.com/detail/SN2026011300031137
+  verified: 2026-11-13
+sz002372:
+  moat_type: 无标注
+  evidence: 塑料管材（PP-R等）零售龙头，属充分竞争的建材制造业
+  controller: 伟星集团（实控人章卡鹏、张三云，民营）
+  sources:
+  - https://f10.10jqka.com.cn/002372/company/
+  verified: 2026-11-13
+sz002408:
+  moat_type: 技术壁垒
+  evidence: 全球最大甲乙酮生产基地（26万吨/年，国内产销量份额超60%）、顺酐40万吨/年产销量世界第一
+  controller: 山东能源集团新材料（实控人山东省国资委）
+  sources:
+  - https://www1.cfi.net.cn/p20260610001273.html
+  - http://qxtd.shandong-energy.com/349409/
+  verified: 2026-11-13
+sz002443:
+  moat_type: 无标注
+  evidence: 焊管、镀锌管等钢制管道制造商，充分竞争
+  controller: 上海金洲智慧企业发展集团（实控人寿光市国资局）
+  sources:
+  - https://data.eastmoney.com/notices/detail/002443/AN202604101821121473.html
+  verified: 2026-11-13
+sz002683:
+  moat_type: 配额牌照
+  evidence: 国内矿山民爆一体化服务龙头（中国第一家矿山民爆一体化上市公司），民爆业务许可专营+矿服全国布局
+  controller: 广东省环保集团（实控人广东省国资委）
+  sources:
+  - https://www.hdbp.com/show_list.php?id=1
+  verified: 2026-11-13
+sz002716:
+  moat_type: 无标注
+  evidence: 白银冶炼企业（原金贵银业，2024年重组后国资入主），行业充分竞争
+  controller: 湖南省矿产资源集团（实控人湖南省国资委）
+  sources:
+  - https://hunansilver.com.cn/about/id/8
+  verified: 2026-11-13
+sz002827:
+  moat_type: 配额牌照
+  evidence: 西藏民爆用品区域龙头企业，民爆行业许可制专营，高原区域准入壁垒高
+  controller: 藏建集团（实控人西藏自治区国资委）
+  sources:
+  - https://stcn.com/article/detail/4065767.html
+  verified: 2026-11-13
+sz003017:
+  moat_type: 无标注
+  evidence: 基础化学原料制造企业，充分竞争
+  controller: 陈阳贵、陈旭君（民营）
+  sources:
+  - https://s.askci.com/stock/summary/003017/
+  verified: 2026-11-13
+sz003035:
+  moat_type: 特许经营
+  evidence: 南方电网体系内节能服务平台（EMC合同能源管理龙头），依托控股股东南方电网在南方五省区电网节能业务具排他性卡位
+  controller: 中国南方电网（持股40.39%，实控人国务院国资委）
+  sources:
+  - http://www.sdenews.com/html/2026/11/784.shtml
+  - https://data.eastmoney.com/report/zw_strategy.jshtml?encodeUrl=OAmez0xNfh8eJ3CrrHuc2jXIfOCtZb9YEi7hWOw2Ycw=
+  verified: 2026-11-13
+sz300026:
+  moat_type: 独家品种
+  evidence: 血必净注射液为国内唯一获批治疗脓毒症的中药二类新药（独家品种），在脓毒症细分市场具垄断地位
+  controller: 成都兴城投资集团（实控人成都市国资委）
+  sources:
+  - https://www.163.com/dy/article/IVQPH1K305199NHJ.html
+  - https://stock.stockstar.com/dmhd/detail/2216002
+  verified: 2026-11-13
+sz300034:
+  moat_type: 技术壁垒
+  evidence: 国内高端和新型高温合金制品生产规模最大企业之一，可生产国内80%以上牌号高温合金，航发材料核心供应商
+  controller: 中国钢研科技集团（实控人国务院国资委）
+  sources:
+  - http://www.cisri-gaona.com.cn/Overview
+  - http://vip.stock.finance.sina.com.cn/q/go.php/vReport_Show/kind/lastest/rptid/823971920968/index.phtml
+  verified: 2026-11-13
+sz300073:
+  moat_type: 无标注
+  evidence: 锂电正极材料（多元/磷酸铁锂）头部企业，但正极行业充分竞争
+  controller: 矿冶科技集团（实控人国务院国资委）
+  sources:
+  - https://m.sohu.com/a/834478934_120988533/
+  verified: 2026-11-13
+sz300281:
+  moat_type: 无标注
+  evidence: 塑料中空成型设备（吹膜机）制造商，充分竞争的专用设备行业
+  controller: 广州万宝长睿投资（实控人广州市人民政府）
+  sources:
+  - http://static.cninfo.com.cn/finalpage/2025-08-15/1224486416.PDF
+  verified: 2026-11-13
+sz300328:
+  moat_type: 无标注
+  evidence: 镁铝合金压铸件企业，液态金属有技术合作（中科院金属所）但主业充分竞争
+  controller: 李扬德（民营）
+  sources:
+  - http://static.cninfo.com.cn/finalpage/2025-08-29/1224610498.PDF
+  verified: 2026-11-13
+sz300402:
+  moat_type: 无标注
+  evidence: 钛/镍等特种金属压力容器（特材装备）制造商，充分竞争
+  controller: 宝钛集团（实控人陕西有色金属控股集团/陕西省政府）
+  sources:
+  - https://s.askci.com/stock/summary/300402/
+  verified: 2026-11-13
+sz300425:
+  moat_type: 无标注
+  evidence: 磁分离水处理装备与水环境服务企业，超磁分离技术打破国际垄断但行业充分竞争
+  controller: 中建创新投资（实控人中国建筑集团/国务院国资委）
+  sources:
+  - https://wapbaike.baidu.com/item/%E4%B8%AD%E5%BB%BA%E7%8E%AF%E8%83%BD%E7%A7%91%E6%8A%80%E8%82%A1%E4%BB%BD%E6%9C%89%E9%99%90%E5%85%AC%E5%8F%B8/24546294
+  verified: 2026-11-13
+sz300470:
+  moat_type: 技术壁垒
+  evidence: 机械密封行业龙头（国内首该细分A股上市、专精特新小巨人），国内石化存量市场市占率约20%、增量大项目市占率60-70%
+  controller: 四川川机投资（实控人四川省机械研究设计院集团）
+  sources:
+  - https://www.ccjys.com/news_ds.aspx?cid=2532&t=12
+  - https://www.9fzt.com/detail/sz_300470_9_744e06724facb4e5f6596682b0b1271e.html
+  verified: 2026-11-13
+sz300685:
+  moat_type: 无标注
+  evidence: 肿瘤伴随诊断（PCR/NGS）IVD企业，国内第一梯队，但行业竞争充分、无牌照或独家资源垄断
+  controller: 国药集团科创院2026年受让20%成为控股股东（实控人变更为国药集团/国务院国资委）
+  sources:
+  - https://m.cnstock.com/commonDetail/725005
+  verified: 2026-11-13
+sz300797:
+  moat_type: 无标注
+  evidence: 金属材料检测与标准物质企业，第三方检测行业充分竞争
+  controller: 中国钢研科技集团（实控人国务院国资委）
+  sources:
+  - https://disc.static.szse.cn/download/disc/disk03/finalpage/2025-12-16/474ef99d-755f-4b58-8edc-7af77c847226.PDF
+  verified: 2026-11-13
+sz301101:
+  moat_type: 无标注
+  evidence: 国产镜片龙头、青控离焦镜国产第一，但镜片行业与蔡司/依视路/豪雅等充分竞争，无垄断属性
+  controller: 上海明月实业（实控人谢公晚、谢公兴、曾少华，民营）
+  sources:
+  - http://disc.static.szse.cn/download/disc/disk03/finalpage/2025-09-11/441696ff-c610-46c6-b6ae-3ca9dc5440b3.PDF
+  - https://m.sgpjbg.com/info/3e9b5786dfa7cfa91ce071d8ecea9801.html
+  verified: 2026-11-13
+sz301217:
+  moat_type: 技术壁垒
+  evidence: 高端铜箔（高频高速）领先企业：全球HVLP系列铜箔产量占比约19.5%、RTF2及以上占比约12%，AI PCB高端铜箔稀缺供应商
+  controller: 铜陵有色（实控人安徽省国资委）
+  sources:
+  - http://stock.10jqka.com.cn/20260529/c677083806.shtml
+  - https://stock.finance.sina.com.cn/stock/view/paper.php?symbol=sh000001&reportid=810059975052
+  verified: 2026-11-13
+sz301526:
+  moat_type: 技术壁垒
+  evidence: 玻纤产能占全球10%（全球前四、国内前三），风电纱及织物全球市占率超25%，高模/超高模产品全球领先
+  controller: 云天化集团（实控人云南省国资委）
+  sources:
+  - https://www.cls.cn/stock?code=sz301526
+  - https://m.hexun.com/stock/2026-06-12/224318956.html
   verified: 2026-11-13
